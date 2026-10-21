@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "manifestSha256": "a696946a0404f082caf1c34e670034bb412eb94d238071234ca163a65ae86fe3",
+  "nativeEntry": {
+    "exeSha256": "4edc9194d7019c9aabacbe0db47a7089895dd3fbe1f5621105397385efa15f56",
+    "schema": 1,
+    "sourceSha256": "b511fb171d1572643a95ba9026bfd134a2ef8624bc0d538c0e4253466dcbca11",
+    "compiler": "Existing MSVC 2026; /MT /GS /guard:cf; imports independently checked"
+  },
+  "scope": "M8 project validation candidate; not release approved"
+}

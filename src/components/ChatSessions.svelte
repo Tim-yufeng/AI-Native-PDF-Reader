@@ -1,0 +1,13 @@
+<script lang="ts">
+ import {onMount} from 'svelte';import type {ChatSession} from '../lib/local-data';
+ let {sessions,busy,error='',status='',close,select,action}:{sessions:ChatSession[];busy:boolean;error?:string;status?:string;close:()=>void;select:(leaf:string)=>void;action:(action:'archive'|'restore'|'delete'|'clear',id?:string)=>void}=$props();
+ let dialog:HTMLDialogElement,archived=$state(false);
+ onMount(()=>dialog.showModal());
+</script>
+<dialog class="chat-sessions" bind:this={dialog} aria-label="此 PDF 会话管理" oncancel={close}>
+ <header><strong>此 PDF 的会话</strong><button title="关闭会话管理" aria-label="关闭会话管理" onclick={close}>×</button></header>
+ <label><input type="checkbox" bind:checked={archived}/>显示归档会话</label>
+ <div class="session-list">{#each sessions.filter(s=>archived||!s.archived) as session}<div><span title={session.title}>{session.title||'未命名对话'}{#if session.archived}<small> · 已归档</small>{/if}</span><div><button disabled={busy||session.archived} onclick={()=>select(session.leafId)}>打开</button><button disabled={busy} onclick={()=>action(session.archived?'restore':'archive',session.id)}>{session.archived?'恢复':'归档'}</button><button class="danger" disabled={busy} onclick={()=>action('delete',session.id)}>删除…</button></div></div>{/each}</div>
+ <footer>{#if error}<small class="danger" role="alert">{error}</small>{:else if status}<small role="status">{status}</small>{/if}<small>归档只隐藏；删除包含该会话的版本与后续。PDF 和批注不变，旧备份可能仍保留历史。</small><button class="danger" disabled={busy||!sessions.length} onclick={()=>action('clear')}>清空此 PDF 全部聊天…</button></footer>
+</dialog>
+<style>.chat-sessions{width:min(480px,calc(100vw - 24px));max-height:75vh;padding:14px;border:1px solid #cbd6df;border-radius:7px;color:#41566a;}.chat-sessions::backdrop{background:#20314235;}header{display:flex;align-items:center;justify-content:space-between;}label{display:flex;align-items:center;gap:5px;font-size:12px;margin:12px 0;}.session-list{max-height:42vh;overflow:auto;}.session-list>div{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid #e7edf2;padding:9px 0;font-size:12px;}.session-list span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}.session-list>div>div{display:flex;gap:4px;flex-shrink:0;}button{font:inherit;font-size:11px;background:#fff;border:1px solid #d2dce5;border-radius:4px;padding:4px 6px;color:#456078;}button:disabled{opacity:.4;}button:hover:not(:disabled){background:#eef3f7;}.danger{color:#a04b42;}footer{border-top:1px solid #e7edf2;margin-top:8px;padding-top:9px;display:flex;flex-direction:column;gap:8px;align-items:flex-start;}small{font-size:10px;line-height:1.6;color:#778896;}</style>

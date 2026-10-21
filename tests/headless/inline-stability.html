@@ -1,0 +1,50 @@
+<!doctype html><meta charset="utf-8"><title>Isolated inline stability</title><div id="app"></div>
+<script type="module">
+import '/src/app.css';
+import {mount,unmount,tick} from 'svelte';
+import InlineExplanation from '/src/components/InlineExplanation.svelte';
+import {defaultInputs} from '/src/lib/preferences.ts';
+import {writeSlot} from '/src/lib/ai-slot.ts';
+const sleep=ms=>new Promise(r=>setTimeout(r,ms)),rows=[],calls=[],plans=new Map(),pending=new Map(),history=[];
+const uid=()=>crypto.randomUUID(),binding={bindingId:uid(),documentId:uid(),revisionId:uid()};
+const container=document.createElement('div');container.style.cssText='position:absolute;inset:0;overflow:auto';container.innerHTML='<div class="page" data-page-number="1"><div class="canvasWrapper" style="width:600px;height:800px"></div></div>';document.body.append(container);
+let stage='initialize',app,active=0,mode='text',delayStart=false,lastRequest=null,closed=0,confirmed=[],busy=[];
+const page={view:[0,0,600,800],userUnit:1,getTextContent:async()=>({items:mode==='image'?[]:[{str:'synthetic evidence',hasEOL:true}]}),getViewport:({scale})=>({width:600*scale,height:800*scale,convertToViewportPoint:(x,y)=>[x*scale,(800-y)*scale]}),render:({canvas})=>{const c=canvas.getContext('2d');c.fillStyle='white';c.fillRect(0,0,canvas.width,canvas.height);c.fillStyle='black';c.fillRect(2,2,5,5);return{promise:Promise.resolve(),cancel(){}};}};
+const reader={getPage:async()=>page,addText:async value=>{confirmed.push(value);},annotation:async()=>{}};
+const check=(v,m)=>{if(!v)throw Error(m);},q=label=>document.querySelector('[aria-label="'+label+'"]');
+const wait=async(fn,m)=>{for(let i=0;i<150;i++){if(fn())return;await sleep(10);}throw Error(m);};
+const record=(id,role,content,parent=null,status='complete')=>({id,role,content,parent,status,deleted:false,metadata:{provider:'mock',model:'mock-vision'}});
+window.__TAURI_INTERNALS__={transformCallback:()=>++active,unregisterCallback(){},invoke:async(cmd,args)=>{
+ calls.push({cmd,args});
+ if(cmd==='m6_preferences')return{context:{schemaVersion:1,beforePages:0,afterPages:0},inputs:defaultInputs(),styles:{schemaVersion:1,selected:null,revisions:[],recent:[]}};
+ if(cmd==='m5_config')return{config:{schemaVersion:1,main:{provider:'mock',endpoint:'',model:'mock-main',vision:true},auxiliary:{provider:'mock',endpoint:'',model:'mock-auxiliary',vision:true}},mainKeyPresent:false,auxiliaryKeyPresent:false,realProviderEnabled:false};
+ if(cmd==='m5_chat_view')return{sessionId:null,leafId:null,sessions:[],path:[...history],versions:[]};
+ if(cmd==='m5_index')return;
+ if(cmd==='m5_prepare'){const plan={id:uid(),sources:[{id:'S1',grantId:uid(),name:'Synthetic.pdf',page:1,text:'synthetic',image:mode==='image'||!!args.input.rect,rect:args.input.rect,reasons:[args.input.rect?'region':'current']}],textBytes:9,coverage:{totalPages:1,indexedPages:1,imageOnlyPages:mode==='image'?1:0,completeRequired:!!args.input.requireComplete},historyMessages:args.input.parentId?2:0};plans.set(plan.id,{...plan,input:structuredClone(args.input)});return plan;}
+ if(cmd==='m5_images'){plans.get(args.preparedId).images=args.images;return;}
+ if(cmd==='m5_start'){
+  const p=plans.get(args.input.preparedId);if(args.input.parentId!==p.input.parentId)throw{code:'denied',message:'Frozen parent mismatch'};
+  check(p.sources.filter(s=>s.image).every(s=>p.images.some(i=>i.sourceId===s.id&&i.png.startsWith('data:image/png;base64,'))),'image source pixels absent');
+  const requestId=uid(),userId=uid(),answerId=uid(),event=(kind,more={})=>args.onEvent.onmessage({kind,requestId,bindingId:args.input.bindingId,userId,answerId,...more});
+  const item={event,requestId,userId,answerId,cancelled:false};pending.set(requestId,item);lastRequest=item;
+  history.push(record(userId,'user',p.input.query,args.input.parentId),record(answerId,'assistant','',userId,'streaming'));
+  if(delayStart){await sleep(100);}event('started');return requestId;
+ }
+ if(cmd==='m5_cancel'){const item=pending.get(args.requestId);if(item){item.cancelled=true;item.event('cancelled');const answer=history.find(r=>r.id===item.answerId);if(answer)answer.status='cancelled';}return;}
+ if(cmd==='m4_delete_message'){const item=history.find(r=>r.id===args.messageId);if(item)item.deleted=true;return;}
+ throw Error('Isolated bridge forbids '+cmd);
+}};
+async function reset(options={}){if(app)await unmount(app);app=null;history.splice(0);plans.clear();pending.clear();lastRequest=null;mode=options.image?'image':'text';delayStart=!!options.delay;closed=0;confirmed=[];busy=[];if(options.parent){const u=uid();history.push(record(u,'user','previous prompt'),record(uid(),'assistant','previous answer',u));}
+ writeSlot('inline','main');app=mount(InlineExplanation,{target:document.querySelector('#app'),props:{reader,binding,container,token:1,source:options.region?{page:1,rect:[20,20,100,100]}:null,box:{page:1,rect:[30,400,260,600]},quick:!!options.quick,totalPages:1,changed(){},place(){},close(){closed++;},busyChanged:value=>busy.push(value)}});await tick();await sleep(20);
+}
+async function send(){if(!q('原位解释 Prompt'))return;const input=q('原位解释 Prompt');input.value='Explain synthetic evidence';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();q('发送原位问题').click();}
+function finish(item,text='完整合成回答'){const row=history.find(r=>r.id===item.answerId);row.content=text;row.status='complete';item.event('delta',{text});item.event('complete');}
+async function scenario(name,run){stage=name;try{await run();rows.push({name,status:'PASS'});}catch(e){rows.push({name,status:'FAIL',error:String(e),ui:document.querySelector('#app').textContent.slice(-500)});}}
+try{
+ await scenario('stream completion stays preparing until final and becomes confirmable',async()=>{await reset();await send();await wait(()=>lastRequest,'request absent');check(q('确认批注').disabled,'confirmation was enabled before final result');finish(lastRequest);await tick();check(q('回答输出区域').textContent==='完整合成回答','complete text missing');check(!q('确认批注').disabled,'complete answer not confirmable');q('确认批注').click();await tick();check(confirmed.length===1&&confirmed[0].text==='完整合成回答','confirm lost final text');});
+ await scenario('existing successful history uses same frozen parent in prepare and start',async()=>{await reset({parent:true});const expected=history.at(-1).id;await send();await wait(()=>lastRequest,'request rejected after existing successful history');check(plans.values().next().value.input.parentId===expected,'wrong prepared parent');finish(lastRequest);await tick();check(!q('确认批注').disabled,'history answer not confirmable');});
+ await scenario('cancel during delayed start cannot revive request or leave it running',async()=>{await reset({delay:true});await send();await wait(()=>lastRequest,'request absent');q('取消原位解释').click();await sleep(160);check(lastRequest.cancelled,'late started request continued after cancellation');check(history.find(r=>r.id===lastRequest.answerId).deleted,'cancelled answer retained visibly');});
+ await scenario('unmount discards an unconfirmed completed answer but preserves confirmation',async()=>{await reset();await send();await wait(()=>lastRequest,'request absent');finish(lastRequest);await tick();const discarded=lastRequest.answerId;await unmount(app);app=null;await tick();check(history.find(r=>r.id===discarded).deleted,'completed unconfirmed answer survived close');await reset();await send();await wait(()=>lastRequest,'request absent');finish(lastRequest);await tick();q('确认批注').click();await tick();await sleep(20);const kept=lastRequest.answerId;await unmount(app);app=null;await tick();check(!history.find(r=>r.id===kept).deleted,'confirmed answer was discarded');});
+ await scenario('at least ten complete inline rounds across main auxiliary text region and pure image',async()=>{for(let n=0;n<10;n++){await reset({image:n%3===1,region:n%3===2,quick:n%2===0,parent:n%2===1});if(n%2){const select=q('本轮模型');select.value='auxiliary';select.dispatchEvent(new Event('change',{bubbles:true}));await tick();await send();}await wait(()=>lastRequest,'round '+(n+1)+' absent');finish(lastRequest,'完整合成回答 '+n);await tick();check(q('回答输出区域').textContent==='完整合成回答 '+n,'round '+(n+1)+' lost result');check(!q('确认批注').disabled,'round '+(n+1)+' not ready');check(calls.filter(c=>c.cmd==='m5_start').at(-1).args.input.slot===(n%2?'auxiliary':'main'),'wrong model slot');q('确认批注').click();await tick();check(confirmed.length===1,'round '+(n+1)+' confirm failed');}});
+}finally{if(app)await unmount(app);delete window.__TAURI_INTERNALS__;await fetch('/__test-result/'+new URLSearchParams(location.search).get('nonce'),{method:'POST',body:JSON.stringify({status:rows.every(r=>r.status==='PASS')?'PASS':'FAIL',evidence:'isolated-headless-production-component-fake-IPC-only',stage,rows})});}
+</script>

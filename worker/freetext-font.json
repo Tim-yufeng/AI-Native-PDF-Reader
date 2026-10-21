@@ -1,0 +1,14 @@
+{
+  "name": "NotoSansSC-Regular-v41.ttf",
+  "bytes": 10559284,
+  "sha256": "d45f67f0a7c0ca3f256950777ce6a61cc7ce5f9696d02900cbbaac25f8aa7d16",
+  "weight": 400,
+  "static": true,
+  "license": "OFL-1.1",
+  "licenseFile": "NotoSansSC-v41-OFL.txt",
+  "url": "https://fonts.gstatic.com/s/notosanssc/v41/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_FnYxNbPzS5HE.ttf",
+  "manifestUrl": "https://fonts.google.com/download/list?family=Noto%20Sans%20SC",
+  "manifestFilename": "static/NotoSansSC-Regular.ttf",
+  "note": "Official complete static download, not CSS language/web subsets; retain original worker/font.json and variable font for legacy evidence. Font bytes stay local like the original font input.",
+  "licenseSha256": "92c343f7e7caebff8bace350bc091b79755f4d0c8b70bb0df21570a1828917b8"
+}

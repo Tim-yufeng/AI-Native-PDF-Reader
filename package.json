@@ -1,0 +1,51 @@
+{
+  "name": "ai-native-pdf-reader",
+  "version": "1.0.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare:assets": "node scripts/fetch-freetext-font.mjs && node scripts/prepare-pdf-assets.mjs",
+    "dev": "npm run prepare:assets && vite",
+    "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.tests.json",
+    "test": "node --test tests/frontend/*.test.ts",
+    "build": "npm run prepare:assets && vite build",
+    "preview": "vite preview",
+    "desktop:dev": "node scripts/desktop.mjs dev",
+    "desktop:m3": "node scripts/desktop.mjs m3",
+    "desktop:m4": "node scripts/desktop.mjs m4",
+    "desktop:build": "node scripts/desktop.mjs build",
+    "desktop:package:prep": "node scripts/desktop.mjs package",
+    "desktop:package:offline": "node scripts/desktop.mjs package-offline",
+    "desktop:package:fixed-runtime": "node scripts/desktop.mjs package-fixed-runtime",
+    "candidate": "node scripts/build-candidate.mjs",
+    "build:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Purpose release",
+    "build:lab": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Purpose lab",
+    "package:verify": "node scripts/verify-nsis-render.mjs",
+    "package:check": "node scripts/check-package.mjs && node scripts/check-writer-assets.mjs",
+    "writer:assets": "node scripts/check-writer-assets.mjs",
+    "desktop:test": "node scripts/desktop.mjs test --locked",
+    "desktop:check": "node scripts/desktop.mjs check --locked"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.3",
+    "dompurify": "3.4.16",
+    "katex": "0.19.0",
+    "marked": "18.1.0",
+    "mupdf": "1.28.1",
+    "pdfjs-dist": "6.4.299",
+    "svelte": "5.57.2"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@tauri-apps/cli": "2.12.2",
+    "@types/katex": "0.16.8",
+    "@types/node": "24.19.2",
+    "svelte-check": "4.7.6",
+    "typescript": "6.0.3",
+    "vite": "8.3.4"
+  },
+  "engines": {
+    "node": ">=24.19.0",
+    "npm": ">=11"
+  }
+}

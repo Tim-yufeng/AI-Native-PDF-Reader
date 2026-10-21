@@ -1,0 +1,33 @@
+<Configuration>
+  <!-- Manual acceptance run for the bundled fixed-version WebView2 package
+       (2026-10-15, plan C). Hardening matches m8-offline-package.wsb: no network,
+       no clipboard, no printer/audio/video redirection, protected client, 4 GiB.
+       The package mapping stays read-only; the single writable mapping is the
+       dedicated results folder, which carries evidence out of the disposable
+       guest and holds no input of any kind. The logon command only prints the
+       acceptance steps: this run is driven by the user, not by a script that
+       asserts an outcome. -->
+  <vGPU>Disable</vGPU>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ProtectedClient>Enable</ProtectedClient>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <MemoryInMB>4096</MemoryInMB>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\Projects\ai-native-pdf-reader\.cache\m8-fixed-runtime-package</HostFolder>
+      <SandboxFolder>C:\M8ReadOnly\Package</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\Projects\ai-native-pdf-reader\.cache\m8-fixed-runtime-results</HostFolder>
+      <SandboxFolder>C:\M8Results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>cmd.exe /k type "C:\M8ReadOnly\Package\ACCEPTANCE-STEPS.txt"</Command>
+  </LogonCommand>
+</Configuration>

@@ -1,0 +1,6 @@
+import { defineConfig } from 'vite';import path from 'node:path';import { fileURLToPath } from 'node:url';
+import {svelte} from '@sveltejs/vite-plugin-svelte';
+import {execFileSync} from 'node:child_process';
+const root=path.resolve(fileURLToPath(new URL('../../',import.meta.url)));
+// Dedicated build; the application's server file allow/deny rules stay intact.
+export default defineConfig({root,publicDir:false,plugins:[...(process.env.INLINE_STABILITY_BASELINE==='1'?[{name:'inline-baseline',enforce:'pre' as const,load(id:string){if(id.replaceAll('\\','/').endsWith('/src/components/InlineExplanation.svelte'))return execFileSync('git',['show','HEAD:src/components/InlineExplanation.svelte'],{cwd:root,encoding:'utf8'});}}]:[]),svelte()],cacheDir:path.join(root,'.cache/headless-vite'),build:{outDir:path.join(root,'.cache/headless-build'),emptyOutDir:false,target:'es2022',rollupOptions:{input:[path.join(root,'tests/headless/inline-stability.html'),path.join(root,'tests/headless/m6.html'),path.join(root,'tests/headless/m6-geometry.html'),path.join(root,'tests/headless/m5-ux.html'),path.join(root,'tests/headless/m6-final.html'),path.join(root,'tests/headless/stroke-ux.html'),path.join(root,'tests/headless/data-init.html'),path.join(root,'tests/headless/writer-menu.html')]}}});

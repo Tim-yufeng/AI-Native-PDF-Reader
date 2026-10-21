@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><title>Isolated data initialization feedback</title>
+<div id="app" style="display:flex;position:relative;height:700px;width:450px;--ai-width:400px"></div>
+<script type="module">
+import '/src/app.css';import {mount,unmount} from 'svelte';import AiChat from '/src/components/AiChat.svelte';
+import {LocalData,chatUnavailableReason,localDataError} from '/src/lib/local-data.ts';import {defaultInputs} from '/src/lib/preferences.ts';
+const calls=[],checks=[],report=async value=>fetch('/__test-result/'+new URLSearchParams(location.search).get('nonce'),{method:'POST',body:JSON.stringify(value)});
+window.__TAURI_INTERNALS__={invoke:async command=>{calls.push(command);
+ if(command==='m5_config')return {config:{schemaVersion:1,main:{provider:'mock',endpoint:'',model:'mock-vision',vision:true},auxiliary:null},mainKeyPresent:false,auxiliaryKeyPresent:false,realProviderEnabled:false};
+ if(command==='m6_preferences')return {styles:{schemaVersion:1,selected:null,revisions:[]},inputs:defaultInputs(),context:{schemaVersion:1,beforePages:0,afterPages:0}};
+ throw Error('Isolated test forbids '+command);
+}};
+const status={available:false,path:'C:/M7Lab/app-data',areas:[],acl:'',generation:0,error:'创建定位目录失败；Windows 5；locator-create'};
+const noop=()=>{},props={visible:true,reader:null,binding:null,token:1,total:1,page:1,data:new LocalData(),selected:[],region:null,beginRegion:noop,beginInline:noop,clearRegion:noop,clearSelected:noop,removePage:noop,consumed:noop,close:noop,jump:noop,openSource:async()=>{}};
+let app;const frame=()=>new Promise(requestAnimationFrame),check=(condition,message)=>{if(!condition)throw Error(message);};
+try{
+ for(const [label,message] of [['startup',chatUnavailableReason(status,'',true)],['binding',chatUnavailableReason({...status,available:true,error:undefined},localDataError({code:'document_identity_unavailable'}),true)]]){
+  app=mount(AiChat,{target:document.querySelector('#app'),props:{...props,unavailableReason:message}});await frame();await frame();
+  const area=document.querySelector('textarea[aria-label="向 PDF 提问"]'),send=document.querySelector('[aria-label="发送问题"]');
+  check(area&&area.disabled&&area.getBoundingClientRect().height>0,'disabled input must stay visible');check(send?.disabled,'unbound send remains denied');
+  check(document.querySelector('[role="status"]')?.textContent===message,'exact startup/binding reason missing');
+  if(label==='startup')check(document.body.textContent.includes(status.path),'app-data location missing');
+  check(!document.body.textContent.includes('请使用隔离测试入口'),'stale developer-only instruction remains');checks.push(label);await unmount(app);app=null;
+ }
+ check(!calls.some(c=>/key|start|connection/.test(c)),'no credentials or generation calls');await report({status:'PASS',checks,scope:'isolated headless UI, no native Tauri or Sandbox evidence',calls});
+}catch(error){await report({status:'FAIL',error:String(error)});}finally{if(app)await unmount(app);}
+</script>

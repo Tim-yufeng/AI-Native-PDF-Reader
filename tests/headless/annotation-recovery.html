@@ -1,0 +1,52 @@
+<!doctype html><meta charset="utf-8"><title>Isolated annotation recovery regressions</title>
+<style>html,body{margin:0;height:100%}#container{position:absolute;inset:0;overflow:auto}#result{display:none}</style>
+<div id="container"><div id="pages" class="pdfViewer"></div></div><pre id="result"></pre>
+<script type="module">
+// Synthetic PDF only, dedicated headless profile. Production reader and Writer;
+// no Tauri bridge, credentials, remote Provider, desktop or user-file access.
+import 'pdfjs-dist/web/pdf_viewer.css';import '/src/app.css';import '/src/lib/freetext-control.css';
+import {getDocument} from 'pdfjs-dist';
+import {createPdfReader} from '/src/lib/pdf-reader.ts';
+import {loadMupdf,appendAnnotationRevision} from '/src/lib/mupdf-writer.ts';
+import {editorFixture} from '/tests/frontend/editor-fixture.ts';
+import {emptyDraft,validateDraft} from '/src/lib/annotation-draft.ts';
+const container=document.querySelector('#container'),pages=document.querySelector('#pages'),cases=[];
+let state,stage='initialization',mupdf,font;
+const reader=createPdfReader(container,pages,s=>state=s);
+const progress=()=>fetch('/__stage/'+new URLSearchParams(location.search).get('nonce'),{method:'POST',body:stage});
+const check=(value,message)=>{if(!value)throw Error(stage+': '+message);};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms)),frames=async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);};
+const wait=async(predicate,label)=>{for(let n=0;n<300;n++){if(predicate())return;await sleep(20);}throw Error(stage+': '+label);};
+const pointer=(target,type,x,y)=>target.dispatchEvent(new PointerEvent(type,{bubbles:true,cancelable:true,button:0,pointerType:'mouse',pointerId:1,isPrimary:true,clientX:x,clientY:y}));
+const nearRect=(actual,expected,label)=>check(actual.length===4&&actual.every((v,i)=>Math.abs(v-expected[i])<.06),label+' '+JSON.stringify({actual,expected}));
+const source=bytes=>({name:'Synthetic annotation recovery.pdf',size:bytes.length,read:async()=>bytes.slice()});
+const record={annotationType:15,pageIndex:0,rect:[75,470,175,530],rotation:0,color:[25,51,77],thickness:2,opacity:1,paths:{lines:[[null,null,null,null,80,505,110,525,140,475,170,495]],points:[[80,505,170,495]]}};
+const highlight={annotationType:9,pageIndex:0,rect:[80,570,190,590],rotation:0,color:[255,255,0],thickness:12,opacity:.4,quadPoints:[80,590,190,590,80,570,190,570]};
+const text={page:1,rect:[80,620,300,680],text:'Synthetic editable annotation',fontSize:14,color:'#19334d'};
+let openedBytes;
+async function open(bytes,draft){openedBytes=bytes;await reader.open(source(bytes),undefined,draft);await wait(()=>state?.viewReady&&state.editingAllowed,'reader not ready');reader.zoom(1);await frames();}
+async function selectText(){await reader.annotation('text');await wait(()=>pages.querySelector('.freeTextEditor'),'existing text editor missing');const node=pages.querySelector('.freeTextEditor'),r=node.getBoundingClientRect();pointer(node,'pointerdown',r.left+r.width/2,r.top+r.height/2);pointer(window,'pointerup',r.left+r.width/2,r.top+r.height/2);node.focus({preventScroll:true});await wait(()=>state.selectedText?.id===node.id,'text selection missing');await frames();return node;}
+async function output(){return appendAnnotationRevision(mupdf,await reader.testWriterBytes(),font,openedBytes).bytes;}
+async function inspect(bytes){const task=getDocument({data:bytes.slice(),cMapUrl:'/pdfjs/cmaps/',cMapPacked:true,standardFontDataUrl:'/pdfjs/standard_fonts/',wasmUrl:'/pdfjs/wasm/'});try{const doc=await task.promise,p=await doc.getPage(1);return {annotations:await p.getAnnotations(),text:(await p.getTextContent()).items.map(i=>i.str??'').join(' ') };}finally{await task.destroy();}}
+async function report(value){document.querySelector('#result').textContent=JSON.stringify(value);await fetch('/__test-result/'+new URLSearchParams(location.search).get('nonce'),{method:'POST',body:JSON.stringify(value)});}
+try{
+ await progress();mupdf=await loadMupdf();font=new Uint8Array(await(await fetch('/noto/NotoSansSC-Regular-v41.ttf')).arrayBuffer());
+ stage='baseline creation';await progress();await open(editorFixture('Original body must survive erase'),validateDraft({...emptyDraft(),entries:[record,highlight]}));await reader.addText(text);let saved=await output();const initial=await inspect(saved);check(initial.annotations.length===3,'initial mixed annotations missing');
+ const md=mupdf.PDFDocument.openDocument(saved,'application/pdf'),page=md.loadPage(0),ink=page.getAnnotations().find(a=>a.getType()==='Ink');check(ink,'Ink subtype absent');const io=ink.getObject(),flags=io.get('F').asNumber();check(io.get('InkList').isArray()&&io.get('InkList').length>0,'InkList absent');check(io.get('AP').get('N').isIndirect()||io.get('AP').get('N').isStream(),'Ink AP absent');check(!(flags&(1|2|32|64|128|512)),'Ink is hidden/read-only/locked');check(io.get('Rect').length===4,'Ink Rect absent');cases.push({case:'ink-standard-object',subtype:'Ink',flags,editable:initial.annotations.find(a=>a.subtype==='Ink')?.isEditable===true,inkList:true,appearance:true});
+ for(const zoom of [.75,1,1.5]){
+  stage='saved text resize '+zoom;await progress();await open(saved);const node=await selectText();reader.zoom(zoom);await wait(()=>Math.abs(state.scale-zoom)<.001,'zoom incomplete');await frames();check(state.selectedText.canResize,'saved text explicitly refuses resizing');const handle=node.querySelector('[data-handle="BR"]');check(handle&&!handle.disabled,'saved resize handle disabled');const before=[...state.selectedText.rect],r=handle.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;const hit=document.elementFromPoint(x,y);check(hit===handle||handle.contains(hit),'resize handle obscured');pointer(hit,'pointerdown',x,y);pointer(window,'pointermove',x+24,y+16);pointer(window,'pointerup',x+24,y+16);await frames();const after=[...state.selectedText.rect];check(after.some((v,i)=>Math.abs(v-before[i])>1),'handle did not change box');check(state.dirty&&state.canUndo,'resize lacks dirty/undo');reader.edit('undo');await frames();nearRect(state.selectedText.rect,before,'resize undo');reader.edit('redo');await frames();nearRect(state.selectedText.rect,after,'resize redo');saved=await output();nearRect((await inspect(saved)).annotations.find(a=>a.subtype==='FreeText').rect,after,'saved resized Rect');await open(saved);await selectText();nearRect(state.selectedText.rect,after,'reopened resized Rect');cases.push({case:'saved-text-resize',zoom,hit:true,undoRedo:true,saveReopen:true});
+ }
+ stage='existing Ink draw/erase interaction';await reader.annotation('ink');await wait(()=>pages.querySelector('.inkEditor'),'saved Ink unavailable');const inkNode=pages.querySelector('.inkEditor'),ib=inkNode.getBoundingClientRect();
+ check(getComputedStyle(inkNode).pointerEvents==='none','Ink rectangle intercepts clicks');check(!document.elementFromPoint(ib.left+ib.width/2,ib.top+ib.height/2)?.closest('.inkEditor'),'blank Ink rectangle is interactive');
+ pointer(inkNode,'pointerdown',ib.left+ib.width/2,ib.top+ib.height/2);pointer(inkNode,'pointerup',ib.left+ib.width/2,ib.top+ib.height/2);await frames();check(state.selectedStroke?.kind!=='ink','Ink remains selected');
+ saved=await output();check((await inspect(saved)).annotations.some(a=>a.subtype==='Ink'),'Ink object lost');cases.push({case:'ink-no-rectangle-selection',standardSave:true});
+ stage='eraser mode';await open(saved);await reader.annotation('erase');await wait(()=>state.annotationMode==='erase','eraser mode unavailable');await frames();
+ // A blank page click must not create a FreeText or erase the PDF body.
+ check(!state.dirty&&reader.draft(false).entries.length===0,'entering erase modified a clean saved document');const layer=pages.querySelector('.annotationEditorLayer'),lr=layer.getBoundingClientRect();pointer(layer,'pointerdown',lr.left+25,lr.top+25);pointer(layer,'pointerup',lr.left+25,lr.top+25);layer.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:lr.left+25,clientY:lr.top+25}));await frames();check(!state.dirty,'blank erase dirtied document');
+ for(const [selector,kind] of [['.inkEditor','Ink'],['.highlightEditor','Highlight'],['.freeTextEditor','FreeText']]){
+  stage='erase saved '+kind;const node=pages.querySelector(selector);check(node,'object unavailable');const r=node.getBoundingClientRect();pointer(node,'pointerdown',r.left+r.width/2,r.top+r.height/2);pointer(node,'pointerup',r.left+r.width/2,r.top+r.height/2);await frames();check(!pages.contains(node),'object not erased');check(state.dirty&&state.canUndo,'erase lacks dirty/undo');reader.edit('undo');await frames();check(pages.contains(node),'erase undo did not restore');reader.edit('redo');await frames();check(!pages.contains(node),'erase redo did not remove');check(state.annotationMode==='erase','erase lost tool mode');cases.push({case:'eraser-'+kind,undoRedo:true});
+ }
+ const erased=await output(),after=await inspect(erased);check(after.annotations.length===0,'deleted annotations remain after Writer');check(after.text.includes('Original body must survive erase'),'original page body lost');await open(erased);await reader.annotation('text');await frames();check(!pages.querySelector('.inkEditor,.highlightEditor,.freeTextEditor'),'erased objects resurrected');cases.push({case:'eraser-save-reopen-empty',bodyPreserved:true,annotations:0});
+ await reader.dispose();await report({status:'PASS',cases,scope:'Production reader/PDF.js/MuPDF in isolated headless browser. No native disk commit or external Edge PDF UI claim.',providerCalls:0});
+}catch(error){await reader.dispose().catch(()=>{});await report({status:'FAIL',stage,error:String(error),cases,state:{dirty:state?.dirty,mode:state?.annotationMode,text:state?.selectedText},providerCalls:0});}
+</script>

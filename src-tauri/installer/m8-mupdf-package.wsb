@@ -1,0 +1,17 @@
+<Configuration>
+  <vGPU>Disable</vGPU>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ProtectedClient>Enable</ProtectedClient>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <MemoryInMB>4096</MemoryInMB>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\Projects\ai-native-pdf-reader\.cache\m8-mupdf-package</HostFolder>
+      <SandboxFolder>C:\M8ReadOnly\Package</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+</Configuration>

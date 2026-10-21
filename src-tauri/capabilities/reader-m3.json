@@ -1,0 +1,7 @@
+{
+  "identifier": "reader-m3",
+  "description": "Opt-in debug experiment: create a fresh copy inside project tests/work/m3 only.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": ["allow-save-m3-copy"]
+}

@@ -1,0 +1,165 @@
+<!doctype html><meta charset="utf-8"><title>Isolated production renderer Save As</title><div id="app"></div>
+<script type="module">
+// Actual production-compiled App, PDF.js editor/serializer and default MuPDF
+// Writer. Only native IPC, file dialog and disk are synthetic in-memory grants.
+// This is not a real Tauri ACL/native commit/Windows GUI compatibility test.
+import 'pdfjs-dist/web/pdf_viewer.css';import '/src/app.css';import '/src/lib/freetext-control.css';
+import {mount,unmount} from 'svelte';import App from '/src/App.svelte';
+import {getDocument} from 'pdfjs-dist';
+import {defaultInputs} from '/src/lib/preferences.ts';
+import {editorFixture} from '/tests/frontend/editor-fixture.ts';
+import {DRAFT_PREFIX} from '/src/lib/draft-store.ts';
+import {emptyDraft,validateDraft} from '/src/lib/annotation-draft.ts';
+// Keep the production reader's Vite-generated worker URL. The copied pdfjs
+// resource folder intentionally has no worker module and must not replace it.
+const calls=[],candidate=import.meta.env.VITE_WRITER_CANDIDATE==='1',check=(ok,message)=>{if(!ok)throw Error(message);};
+const bytes=editorFixture('Original save-chain headless source'),grant='eed286ef-3253-4961-a0cb-c1645449c7b4';
+const originalText='中文 α + β ≤ 10',updatedText='修改后 中文 β ≥ 20';
+const files=new Map([[grant,{bytes,name:'Synthetic Save As.pdf'}]]),outputs=[],originalOutputs=[];
+let callback=0,app,checkFailure=null,finishFailure=null,stage='initialization';
+const sha=async value=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',value))].map(n=>n.toString(16).padStart(2,'0')).join('');
+const sourceHash=await sha(bytes);
+const recovered=validateDraft({...emptyDraft(),entries:[
+ {annotationType:3,pageIndex:0,rect:[78,620,300,680],rotation:0,color:[25,51,77],fontSize:16,value:originalText},
+ {annotationType:9,pageIndex:0,rect:[80,570,190,590],rotation:0,color:[255,255,0],thickness:12,opacity:.4,quadPoints:[80,590,190,590,80,570,190,570]},
+ {annotationType:15,pageIndex:0,rect:[75,470,175,530],rotation:0,color:[25,51,77],thickness:2,opacity:1,paths:{lines:[[null,null,null,null,80,505,110,525,140,475,170,495]],points:[[80,505,170,495]]}},
+]});
+const draftId=crypto.randomUUID();
+localStorage.setItem(DRAFT_PREFIX+draftId,JSON.stringify({version:1,id:draftId,hash:sourceHash,updated:Date.now(),draft:recovered}));
+
+async function inspectOutput(output,text){
+ const task=getDocument({data:output.slice(),standardFontDataUrl:'/pdfjs/standard_fonts/',cMapUrl:'/pdfjs/cmaps/',cMapPacked:true,wasmUrl:'/pdfjs/wasm/'});
+ try{
+  const pdf=await task.promise;check(pdf.numPages===4,'Writer lost original pages');
+  const page=await pdf.getPage(1),annotations=await page.getAnnotations();
+  check(annotations.map(a=>a.subtype).sort().join(',')==='FreeText,Highlight,Ink','Writer changed annotation types');
+  const free=annotations.find(a=>a.subtype==='FreeText');check(free.contentsObj?.str===text,'FreeText content differs: '+free.contentsObj?.str+' expected '+text);
+  check(free.hasAppearance&&free.isEditable,'FreeText appearance/editability missing');
+  check(annotations.every(a=>a.hasAppearance),'A native annotation lost its appearance');
+  const body=await page.getTextContent();check(body.items.some(i=>i.str?.includes('Original save-chain headless source')),'Original page text lost');
+  check((await page.getOperatorList()).fnArray.length>0,'Saved page cannot produce rendering operators');
+  return {types:annotations.map(a=>a.subtype).sort(),editable:true,hasAppearance:true};
+ }finally{await task.destroy();}
+}
+window.isTauri=true;
+window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:()=>{}};
+window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:()=>++callback,unregisterCallback:()=>{},invoke:async (command,args,options)=>{
+ calls.push(command);
+ if(command==='finish_unicode_export'||command==='save_original_pdf'){
+  check(args instanceof Uint8Array&&options?.headers['x-ai-save-version']==='1','Save must use raw bytes and versioned headers');
+  const length=Number(options.headers['x-ai-save-candidate-bytes']);check(length>0&&length<args.length,'candidate range invalid');
+  args={taskId:options.headers['x-ai-save-task'],candidate:args.subarray(0,length),output:args};
+ }
+ if(command==='pending_pdf_recovery')return [];
+ if(command==='get_settings')return {notice:''};
+ if(command==='m7_open_pending')return {documents:[],rejected:[]};
+ if(command==='m4_status')return {available:false,error:'Synthetic test: no persistent data',path:'',areas:[],acl:'',generation:0};
+ if(command==='m6_preferences')return {styles:{schemaVersion:1,selected:null,revisions:[]},inputs:defaultInputs(),context:{schemaVersion:1,beforePages:0,afterPages:0}};
+ if(command==='m5_config')return {config:{schemaVersion:1,main:{provider:'mock',endpoint:'',model:'mock-vision',vision:true},auxiliary:null},mainKeyPresent:false,auxiliaryKeyPresent:false,realProviderEnabled:false};
+ if(command==='check_unicode_writer'){if(checkFailure)throw checkFailure;return 'Synthetic resource-check response; actual pinned font/wasm requested by real renderer';}
+ if(command==='pick_pdfs')return {documents:[{grantId:grant,name:files.get(grant).name,size:bytes.length}],rejected:[]};
+ if(command==='begin_pdf_read'){check(files.has(args.grantId),'Unknown read grant');return args.grantId;}
+ if(command==='read_pdf'){const file=files.get(args.taskId);check(file,'Unknown read task');return file.bytes.slice().buffer;}
+ if(command==='begin_unicode_export'){check(files.has(args.grantId),'Unknown export grant');return args.grantId;}
+ if(command==='finish_unicode_export'){
+  if(finishFailure)throw finishFailure;
+  check(Object.keys(args).sort().join(',')==='candidate,output,taskId','Save As IPC fields differ from native contract');
+  const source=files.get(args.taskId);check(source,'Unknown export task');
+  const candidateBytes=new Uint8Array(args.candidate),output=new Uint8Array(args.output);
+  check(candidateBytes.length>source.bytes.length&&source.bytes.every((v,i)=>candidateBytes[i]===v),'PDF.js candidate is not an actual incremental editor revision');
+  check(output.length>candidateBytes.length&&candidateBytes.every((v,i)=>output[i]===v),'Default Writer did not append its own revision');
+  const inspected=await inspectOutput(output,outputs.length?updatedText:originalText);
+  const id=crypto.randomUUID(),name=`Synthetic copy ${outputs.length+1}.pdf`;
+  files.set(id,{bytes:output,name});outputs.push({candidateBytes:candidateBytes.length,outputBytes:output.length,sha256:await sha(output),...inspected});
+  return {grantId:id,name,size:output.length};
+ }
+ if(command==='save_original_pdf'){
+  const source=files.get(args.taskId);check(source,'Original save used an expired grant');
+  const output=new Uint8Array(args.output),candidate=new Uint8Array(args.candidate);
+  check(candidate.length>source.bytes.length&&source.bytes.every((v,i)=>candidate[i]===v),'Original prefix differs');
+  let inspected;try{inspected=await inspectOutput(output,originalOutputs.length?updatedText+' 第二次保存':updatedText+' 首轮保存');}catch(error){originalOutputs.push({error:String(error)});throw error;}
+  const id=crypto.randomUUID();files.delete(args.taskId);files.set(id,{bytes:output,name:source.name});
+  originalOutputs.push({bytes:output.length,sha256:await sha(output),...inspected});
+  return {descriptor:{grantId:id,name:source.name,size:output.length},hash:await sha(output),binding:null,historyPending:false,reopenRequired:false};
+ }
+ if(['cancel_unicode_export','cancel_pdf_read','release_pdf','set_reader_settings'].includes(command))return;
+ if(command==='plugin:event|listen')return callback;
+ if(command==='plugin:event|unlisten')return;
+ if(command==='plugin:window|is_focused')return false;
+ throw Error('Synthetic test forbids '+command);
+}};
+const frame=async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);};
+const wait=async(test,label)=>{for(let i=0;i<600;i++){if(test())return;await new Promise(r=>setTimeout(r,20));}throw Error(`${stage}: ${label}; notice=${document.querySelector('#reader-notice')?.textContent??''}`);};
+const report=value=>fetch('/__test-result/'+new URLSearchParams(location.search).get('nonce'),{method:'POST',body:JSON.stringify(value)});
+const menu=async()=>{if(!document.querySelector('#more-options'))document.querySelector('[aria-label="更多操作"]').click();await frame();};
+const saveAs=async()=>{await menu();const button=document.querySelector('[aria-label="另存为批注副本"]');check(button&&!button.disabled,'Save As unavailable');button.click();};
+let savedCopyCancelPreservesEdit=false,savedCopyExplicitReopen=false;
+const openCopy=async number=>{
+ const button=()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='打开批注副本');
+ button().click();
+ if(number===2){
+  const selector='dialog[open][aria-labelledby="copy-open-title"]';
+  await wait(()=>document.querySelector(selector),'Existing annotation reopen needs explicit confirmation');
+  const beforeTabs=document.querySelectorAll('.document-tab').length,beforeRelease=calls.filter(c=>c==='release_pdf').length;
+  const recovery=()=>Object.keys(localStorage).filter(key=>key.startsWith(DRAFT_PREFIX)).sort().map(key=>[key,localStorage.getItem(key)]);
+  const beforeRecovery=JSON.stringify(recovery());
+  [...document.querySelector(selector).querySelectorAll('button')].find(b=>b.textContent==='取消切换').click();await frame();
+  check(!document.querySelector(selector),'Cancel did not dismiss reopen confirmation');
+  check(document.querySelector('.document-tab.active')?.textContent.includes('Synthetic copy 1.pdf'),'Cancel changed active document');
+  check(document.querySelectorAll('.document-tab').length===beforeTabs,'Cancel removed a tab');
+  check(document.querySelector('.freeTextEditor .internal')?.textContent.replaceAll('\u00a0',' ').includes(updatedText),'Cancel lost edited text');
+  check(calls.filter(c=>c==='release_pdf').length===beforeRelease&&outputs.length===2,'Cancel released a grant or saved again');
+  check(JSON.stringify(recovery())===beforeRecovery,'Cancel changed existing recovery records');savedCopyCancelPreservesEdit=true;
+  button().click();await wait(()=>document.querySelector(selector),'Reopen confirmation not repeatable');
+  [...document.querySelector(selector).querySelectorAll('button')].find(b=>b.textContent==='打开已保存副本并关闭当前标签').click();
+  await wait(()=>!document.querySelector(selector),'Explicit reopen confirmation did not close');
+  await wait(()=>document.querySelector('.document-tab.active')?.textContent.includes('Synthetic copy 2.pdf')&&!document.querySelector('[aria-label="文本框"]').disabled,'Second saved copy reader not ready');
+  check(![...document.querySelectorAll('.document-tab')].some(tab=>tab.textContent.includes('Synthetic copy 1.pdf')),'Explicit reopen did not close previous copy tab');
+  check(document.querySelectorAll('.document-tab').length===beforeTabs&&calls.filter(c=>c==='release_pdf').length===beforeRelease+1,'Explicit reopen did not replace exactly one authorized tab');
+  check(JSON.stringify(recovery())===beforeRecovery,'Explicit reopen deleted recovery records');savedCopyExplicitReopen=true;
+ }
+ await wait(()=>document.querySelector('.document-tab.active')?.textContent.includes(`Synthetic copy ${number}.pdf`)&&!document.querySelector('[aria-label="文本框"]').disabled,'Saved copy reader not ready');
+};
+try{
+ check(import.meta.env.DEV===false,'Test must use production-compiled Svelte');
+ app=mount(App,{target:document.querySelector('#app')});await frame();await menu();
+ const details=document.querySelector('.development-tools');
+ check(document.querySelector('[aria-label="另存为批注副本"]')?.disabled,'Save As needs an opened desktop PDF');
+ check(!details,'Development actions leaked into release');
+ check(!document.body.textContent.includes('打开自制示例')&&!document.body.textContent.includes('M3：导出验证副本'),'Development-only actions leaked into release');
+ stage='actual App draft restore';
+ document.querySelector('[aria-label="打开 PDF"]').click();await wait(()=>!document.querySelector('[aria-label="文本框"]').disabled,'PDF reader not ready');
+ await wait(()=>[...document.querySelectorAll('.recovery-bar button')].some(b=>b.textContent.startsWith('恢复 ')),'Synthetic draft not offered');
+ [...document.querySelectorAll('.recovery-bar button')].find(b=>b.textContent.startsWith('恢复 ')).click();
+ // PDF.js uses non-breaking spaces to keep editable text layout stable.
+ await wait(()=>document.querySelector('.freeTextEditor .internal')?.textContent.replaceAll('\u00a0',' ').includes(originalText),'Real PDF.js FreeText draft not restored');
+ await wait(()=>document.querySelector('.inkEditor')&&document.querySelector('.highlightEditor'),'Real PDF.js stroke drafts not restored');
+ stage='first real renderer save';await saveAs();await wait(()=>outputs.length===1&&document.body.textContent.includes('批注副本已保存'),'First Writer output not attached');
+ await openCopy(1);
+ stage='reopen and edit standard FreeText';
+ await wait(()=>document.querySelector('.annotationLayer .freeTextAnnotation'),'Saved FreeText annotation element missing');
+ const annotation=document.querySelector('.annotationLayer .freeTextAnnotation');annotation.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,button:0,detail:2}));
+ await wait(()=>document.querySelector('.freeTextEditor .internal[contenteditable="true"]'),'Saved FreeText could not enter edit mode');
+ const body=document.querySelector('.freeTextEditor .internal[contenteditable="true"]');const line=document.createElement('div');line.textContent=updatedText;body.replaceChildren(line);body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:updatedText}));
+ stage='second real renderer save';await saveAs();await wait(()=>outputs.length===2&&document.body.textContent.includes('批注副本已保存'),'Edited Writer output not attached');await openCopy(2);
+ await wait(()=>document.querySelector('.annotationLayer .freeTextAnnotation'),'Second saved FreeText not reopened');
+ check(await sha(bytes)===sourceHash,'Original synthetic source mutated');
+ stage='actual App Ctrl+S two rounds';
+ for(let round=0;round<2;round++){
+  const annotation=document.querySelector('.annotationLayer .freeTextAnnotation');annotation.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,button:0,detail:2}));
+  await wait(()=>document.querySelector('.freeTextEditor .internal[contenteditable="true"]'),'Ctrl+S reopened annotation not editable');
+  const editor=document.querySelector('.freeTextEditor .internal[contenteditable="true"]'),line=document.createElement('div');const text=round?updatedText+' 第二次保存':updatedText+' 首轮保存';
+  line.textContent=text;editor.replaceChildren(line);editor.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));
+  await frame();document.body.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'s',code:'KeyS',ctrlKey:true}));
+  await wait(()=>originalOutputs.length===round+1&&!document.querySelector('.shell').inert&&document.body.textContent.includes('已保存。'),'Ctrl+S save/reload incomplete');
+  await wait(()=>document.querySelector('.annotationLayer .freeTextAnnotation')&&!document.querySelector('[aria-label="文本框"]').disabled,'Ctrl+S file not reopened');
+  check(!document.querySelector('.document-tab.active')?.textContent.includes('●'),'Saved tab remains dirty');
+ }
+ stage='native error feedback';const beforeFailure=outputs.length;
+ checkFailure={code:'writer_resource_mismatch',message:'FAKE-PRIVATE-DIAGNOSTIC-NOT-FOR-UI'};await saveAs();await wait(()=>document.body.textContent.includes('writer_resource_mismatch'),'Check rejection hidden');
+ check(outputs.length===beforeFailure,'Failed check sent PDF bytes');check(!document.body.textContent.includes('FAKE-PRIVATE-DIAGNOSTIC'),'Untrusted diagnostic leaked');
+ checkFailure=null;finishFailure={code:'writer_conversion_refused',message:'FAKE-PRIVATE-DIAGNOSTIC-NOT-FOR-UI'};await saveAs();await wait(()=>document.body.textContent.includes('writer_conversion_refused'),'Native finish rejection hidden');
+ check(!document.body.textContent.includes('FAKE-PRIVATE-DIAGNOSTIC'),'Untrusted export text leaked');check(!calls.some(c=>/key|connection|m5_start/.test(c)),'Credentials/Provider calls forbidden');
+ await report({status:'PASS',candidate,outputs,originalSourceHash:sourceHash,sourceUnchanged:true,actualEditorRestore:true,actualReopenEdit:true,savedCopyCancelPreservesEdit,savedCopyExplicitReopen,actualDefaultMupdfWriter:true,originalSaveTwoRounds:true,originalOutputs,nativeRejectionVisible:true,scope:'Production-compiled App + actual PDF.js editor/serialization + actual MuPDF/WASM/font + independent PDF.js reopen; synthetic IPC/grants/dialog/disk only, not Tauri ACL/native Windows GUI proof',calls});
+}catch(error){await report({status:'FAIL',candidate,stage,error:String(error),outputs,originalOutputs,calls,reader:{pages:document.querySelectorAll('.page').length,canvas:document.querySelectorAll('.canvasWrapper canvas').length,textDisabled:document.querySelector('[aria-label="文本框"]')?.disabled,status:document.querySelector('.empty-state')?.textContent??'',recovery:[...document.querySelectorAll('.recovery-bar,.draft-status')].map(e=>e.textContent),editors:[...document.querySelectorAll('.annotationEditorLayer')].map(e=>e.innerHTML.slice(0,2500)),pageInput:document.querySelector('[aria-label="页码"]')?.value},notice:document.querySelector('#reader-notice')?.textContent??''});}finally{if(app)await unmount(app);}
+</script>

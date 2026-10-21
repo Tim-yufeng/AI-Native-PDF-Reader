@@ -1,0 +1,146 @@
+<!doctype html><meta charset="utf-8"><title>Isolated Release App save</title><div id="app"></div>
+<script type="module">
+// Hidden real WebView2 only: actual App, editor, IPC, SQLite, ACL and disk.
+// The Rust lab substitutes only file-picker destinations with disposable paths.
+import 'pdfjs-dist/web/pdf_viewer.css';import '/src/app.css';import '/src/lib/freetext-control.css';
+import {mount,unmount} from 'svelte';import App from '/src/App.svelte';
+import {invoke} from '@tauri-apps/api/core';import {getDocument} from 'pdfjs-dist';
+import {DRAFT_PREFIX} from '/src/lib/draft-store.ts';import {emptyDraft,validateDraft} from '/src/lib/annotation-draft.ts';
+import {writeSlot} from '/src/lib/ai-slot.ts';
+const check=(ok,message)=>{if(!ok)throw Error(message);},rows=[],inlineRows=[];
+const pageErrors=[];window.addEventListener('error',e=>pageErrors.push(String(e.error??e.message)));window.addEventListener('unhandledrejection',e=>pageErrors.push(String(e.reason)));
+let app,stage='initialize';const notice=()=>document.querySelector('#reader-notice')?.textContent??'';
+const inkEvidence=[];
+function traceInk(phase){const layer=document.querySelector('.annotationEditorLayer'),r=layer?.getBoundingClientRect();const state={phase,dirty:!!dirty(),tabs:document.querySelectorAll('.document-tab').length,inert:!!document.querySelector('.shell')?.inert,busy:document.querySelector('.shell')?.getAttribute('aria-busy'),dialogs:document.querySelectorAll('dialog[open]').length,recoveryOffered:!!document.querySelector('.recovery-bar'),inkPressed:document.querySelector('[aria-label="自由笔画"]')?.getAttribute('aria-pressed'),layer:layer?.className,rect:r?{x:r.x,y:r.y,width:r.width,height:r.height}:null,fontFaces:[...document.fonts].map(f=>({family:f.family,status:f.status})),undo:!document.querySelector('[aria-label="撤销"]')?.disabled,redo:!document.querySelector('[aria-label="重做"]')?.disabled,paths:[...document.querySelectorAll('.page svg path')].map(p=>p.getAttribute('d')),editors:document.querySelectorAll('.inkEditor').length};inkEvidence.push(state);return state;}
+const dirty=()=>document.querySelector('.document-tab.active')?.textContent.includes('●');
+const metrics=[];let animationFrames=0,busyFrames=0,animationRunning=true;const animate=()=>{if(animationRunning){animationFrames++;if(document.querySelector('.shell')?.getAttribute('aria-busy')==='true')busyFrames++;requestAnimationFrame(animate);}};requestAnimationFrame(animate);
+// Installed only in this isolated page; observation never changes saved bytes.
+const evidenceOnly=__SAVE_EVIDENCE__,saveEvidence=[];let observation=null,lastFrame=performance.now();
+globalThis.__SAVE_PROBE__={
+ async measure(name,operation){const start=performance.now();try{return await operation();}finally{if(observation)observation.stages[name]=(observation.stages[name]??0)+performance.now()-start;}},
+ array(name,bytes){const start=performance.now(),value=Array.from(bytes);if(observation){observation.stages[name]=performance.now()-start;observation[name+'Bytes']=bytes.byteLength;}return value;},
+ headers(operation,candidateBytes,outputBytes){const start=performance.now(),value=operation();if(observation){observation.stages.rawHeadersMs=performance.now()-start;observation.wire={format:'raw',candidateBytes,outputBytes};}return value;},
+ writer(details){if(observation)observation.writer=details;},
+ count(name,value){if(observation)observation.counts[name]=(observation.counts[name]??0)+value;},
+};
+const observeFrame=now=>{if(!animationRunning)return;if(observation)observation.maxFrameGapMs=Math.max(observation.maxFrameGapMs,now-lastFrame);lastFrame=now;requestAnimationFrame(observeFrame);};if(evidenceOnly)requestAnimationFrame(observeFrame);
+const inkPaths=()=>[...document.querySelectorAll('.page svg path[id^="path_"]')].map(p=>p.getAttribute('d')).filter(Boolean);
+// PDF.js formats the same SVG commands differently after undo/redo. Compare
+// every command/coordinate token, retaining geometry rather than whitespace.
+const inkGeometry=()=>inkPaths().map(d=>d.match(/[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d*\.)?\d+(?:[eE][-+]?\d+)?/g));
+async function drawInk(id=70){
+ await wait(()=>{const layer=document.querySelector('.page[data-loaded="true"] .annotationEditorLayer.inkEditing:not(.disabled)'),r=layer?.getBoundingClientRect();return r?.width>200&&r.height>200;},'PDF.js ink layer not ready');
+ const layer=document.querySelector('.annotationEditorLayer.inkEditing'),r=layer.getBoundingClientRect(),p={bubbles:true,cancelable:true,button:0,buttons:1,pointerId:id,pointerType:'mouse',isPrimary:true,clientX:r.left+r.width*.55,clientY:r.top+r.height*.45};
+ const before=JSON.stringify(inkPaths());layer.dispatchEvent(new PointerEvent('pointerdown',p));check(layer.classList.contains('drawing'),'PDF.js did not begin the ink stroke');if(id===60)traceInk('pointerdown');
+ for(let i=1;i<=12;i++)layer.dispatchEvent(new PointerEvent('pointermove',{...p,clientX:p.clientX+i*8,clientY:p.clientY+Math.sin(i/12*Math.PI*2)*22}));
+ layer.dispatchEvent(new PointerEvent('pointerup',{...p,buttons:0,clientX:p.clientX+96}));
+ check(!layer.classList.contains('drawing'),'PDF.js did not complete the ink stroke');check(inkPaths().some(d=>d.length>40)&&JSON.stringify(inkPaths())!==before,'PDF.js produced no completed ink path');if(id===60)traceInk('pointerup');
+}
+const frame=async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);};
+const wait=async(fn,message)=>{for(let i=0;i<600;i++){if(fn())return;if(/未完成|writer_/.test(notice()))throw Error(message+'; '+notice());await new Promise(r=>setTimeout(r,25));}throw Error(message+'; '+notice());};
+// WebView titles are bounded. Send the larger ten-round evidence in small,
+// ordered pieces so successful execution is not lost to title truncation.
+const report=async value=>{const raw=JSON.stringify(value);for(let n=0;n<raw.length;n+=1500){document.title='SAVE_CHAIN_PART:'+n/1500+':'+raw.slice(n,n+1500);await new Promise(r=>setTimeout(r,100));}document.title='SAVE_CHAIN_END';};
+const descriptors=globalThis.__SAVE_CHAIN_INPUTS__;
+const source=descriptors.app;
+async function readSource(d){const taskId=await invoke('begin_pdf_read',{grantId:d.grantId});try{return new Uint8Array(await invoke('read_pdf',{taskId}));}finally{await invoke('cancel_pdf_read',{taskId}).catch(()=>{});}}
+async function inspect(d,text,ink=true){const bytes=await readSource(d),task=getDocument({data:bytes.slice(),standardFontDataUrl:'/pdfjs/standard_fonts/',useSystemFonts:false,useWasm:false,stopAtErrors:true});try{const pdf=await task.promise;check(pdf.numPages===1,'page count changed');const p=await pdf.getPage(1),a=await p.getAnnotations();check(a.map(v=>v.subtype).sort().join(',')===(ink?'FreeText,Highlight,Ink':'FreeText,Highlight'),'annotation types differ');check(a.find(v=>v.subtype==='FreeText').contentsObj?.str===text,'saved text differs');check(a.every(v=>v.hasAppearance&&v.isEditable),'native appearance/editability missing');check((await p.getTextContent()).items.some(v=>v.str?.includes('G1 PLAIN')),'original body missing');await p.getOperatorList();return{sha256:[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(v=>v.toString(16).padStart(2,'0')).join(''),bytes:bytes.length,types:a.map(v=>v.subtype)};}finally{await task.destroy();}}
+async function closeOpen(){document.querySelector('.document-tab.active .tab-close').click();await wait(()=>!document.querySelector('.document-tab'),'tab did not close');document.querySelector('[aria-label="打开 PDF"]').click();await wait(()=>document.querySelector('.annotationLayer .freeTextAnnotation')&&!document.querySelector('[aria-label="文本框"]').disabled&&document.querySelector('.zoom-trigger')?.textContent.includes('117.16'),'disk reopen failed');}
+try{
+ check(import.meta.env.DEV===false,'must use production Svelte');check(source?.name==='plain.pdf','fixed plain input absent');
+ stage='read fixed native grant';const bytes=await readSource(source),hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(v=>v.toString(16).padStart(2,'0')).join('');
+ check(new TextDecoder().decode(bytes).includes('/ID [(012345>>89abcdef)(0123456789abcdef)]'),'literal delimiter regression fixture absent');
+ await invoke('m5_set_config',{config:{schemaVersion:1,main:{provider:'mock',endpoint:'',model:'mock-http/main',vision:true},auxiliary:{provider:'mock',endpoint:'',model:'mock-http/auxiliary',vision:true}}});
+ const syntheticStyles=await invoke('m6_edit_style',{input:{id:null,name:'课堂合成表达验证',aliases:[],guidelines:'CLASSROOM_SYNTHETIC_STYLE：用简短、温和的句子解释；保留全部必要数学条件。',avoid:'不得编造事实或个人经历。',enabled:true}});
+ await invoke('m6_select_style',{id:syntheticStyles.revisions.at(-1).id});
+ const initialBinding=await invoke('m4_bind_document',{grantId:source.grantId,pageCount:1});
+ await invoke('m4_add_message',{bindingId:initialBinding.bindingId,content:'Synthetic save-loop history',page:1,parentId:null});
+ const documentId=initialBinding.documentId;await invoke('release_pdf',{grantId:source.grantId});
+ const id=crypto.randomUUID(),draft=validateDraft({...emptyDraft(),entries:[
+ {annotationType:9,pageIndex:0,rect:[160.34,690.12,224.56,706.78],rotation:0,color:[255,255,0],thickness:12,opacity:.4,quadPoints:[160.34,706.78,224.56,706.78,160.34,690.12,224.56,690.12]},
+ ]});localStorage.setItem(DRAFT_PREFIX+id,JSON.stringify({version:1,id,hash,updated:Date.now(),draft}));
+ app=mount(App,{target:document.querySelector('#app')});await frame();document.querySelector('[aria-label="打开 PDF"]').click();
+ stage='ink immediate dirty, undo, redo and delete';await wait(()=>[...document.querySelectorAll('.recovery-bar button')].some(b=>b.textContent.startsWith('恢复 '))&&!document.querySelector('[aria-label="自由笔画"]').disabled,'draft not offered');
+ // Empty editor layers are hidden in read mode; the page must be rendered and
+ // the layer present before choosing Ink, then drawInk waits for native Ink mode.
+ await wait(()=>{const page=document.querySelector('.page[data-loaded="true"]'),r=page?.getBoundingClientRect();return page?.querySelector('.annotationEditorLayer')&&r?.width>200&&r.height>200;},'rendered page/editor layer not ready before tool selection');
+ traceInk('before ink');check(!dirty(),'clean input already dirty');check(!document.querySelector('.shell').inert&&document.querySelectorAll('dialog[open]').length===0,'save/modal blocks the isolated ink test');check(document.querySelectorAll('.document-tab').length===1&&!document.querySelector('.inkEditor,.highlightEditor'),'old session or restored draft contaminated the ink test');
+ document.querySelector('[aria-label="自由笔画"]').click();await drawInk(60);await frame();const stroke=traceInk('after stroke');check(dirty(),'completed ink stroke not dirty while ink tool stays active');check(stroke.undo&&stroke.inkPressed==='true','completed ink lacks immediate undo while ink tool stays active');const completedPaths=JSON.stringify(inkGeometry());
+ document.querySelector('[aria-label="撤销"]').click();await frame();traceInk('after undo');check(!dirty(),'undo last ink stays dirty');check(JSON.stringify(inkGeometry())!==completedPaths,'undo did not remove the actual ink path');
+ check(!document.querySelector('[aria-label="重做"]').disabled,'redo ink button disabled after undo');document.querySelector('[aria-label="重做"]').click();await frame();traceInk('after redo');check(dirty(),'redo ink not dirty');check(JSON.stringify(inkGeometry())===completedPaths,'redo did not restore the actual ink path');
+ document.querySelector('[aria-label="阅读与选择"]').click();await wait(()=>document.querySelector('.inkEditor'),'PDF.js did not materialize the completed ink editor');await frame();const inkBox=document.querySelector('.inkEditor');traceInk('committed ink editor');check(inkBox,'redo ink editor absent');
+ // Also pass the existing 700ms recovery checkpoint; a stale tab draft must
+ // not keep the marker after the actual last stroke has been deleted.
+ await wait(()=>Object.keys(localStorage).filter(key=>key.startsWith(DRAFT_PREFIX)).some(key=>{const saved=JSON.parse(localStorage.getItem(key));return saved.hash===hash&&saved.draft.entries.some(e=>e.annotationType===15);}), 'actual ink recovery checkpoint missing');
+ check(!inkBox.classList.contains('selectedEditor')&&getComputedStyle(inkBox).pointerEvents==='none','Ink must not have an interactive selection rectangle');
+ document.querySelector('[aria-label="橡皮擦"]').click();await wait(()=>document.querySelector('.reader-erasing .annotationEditorLayer.freetextEditing:not(.disabled)'),'eraser not ready');await frame();const eraseBox=inkBox.getBoundingClientRect();
+ inkBox.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0,pointerId:61,pointerType:'mouse',isPrimary:true,clientX:eraseBox.left+eraseBox.width/2,clientY:eraseBox.top+eraseBox.height/2}));inkBox.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,button:0,pointerId:61,pointerType:'mouse',isPrimary:true}));
+ await frame();check(!dirty(),'erase last ink stays dirty');check(!inkBox.isConnected,'erase left the actual ink editor connected');document.querySelector('[aria-label="阅读与选择"]').click();await frame();
+ traceInk('after delete');
+ if(globalThis.__SAVE_APP_INK_ONLY__){await report({schema:1,status:'PASS',scope:'ink-only',inkDirty:'stroke/undo/redo/delete PASS',inkEvidence});}else{
+ stage='restore actual native editors';[...document.querySelectorAll('.recovery-bar button')].find(b=>b.textContent.startsWith('恢复 ')).click();
+ await wait(()=>document.querySelector('.highlightEditor'),'native editor restore failed');
+ stage='create actual FreeText at screenshot zoom';document.querySelector('[aria-label="缩放与适合方式"]').click();await frame();
+ const zoom=document.querySelector('[aria-label="缩放百分比"]');zoom.value='117.16';zoom.dispatchEvent(new Event('input',{bubbles:true}));zoom.closest('form').requestSubmit();await wait(()=>document.querySelector('.zoom-trigger').textContent.includes('117.16'),'custom zoom not applied');await frame();
+ document.querySelector('[aria-label="自由笔画"]').click();await frame();
+ await drawInk();await frame();
+ document.querySelector('[aria-label="文本框"]').click();await wait(()=>document.querySelector('[aria-label="文本框"]').getAttribute('aria-pressed')==='true','text tool inactive');await frame();
+ const layer=document.querySelector('.annotationEditorLayer'),bounds=layer.getBoundingClientRect();
+ const pointer={bubbles:true,cancelable:true,button:0,pointerId:71,pointerType:'mouse',isPrimary:true,clientX:bounds.left+bounds.width*.21,clientY:bounds.top+bounds.height*.35};
+ layer.dispatchEvent(new PointerEvent('pointerdown',pointer));layer.dispatchEvent(new PointerEvent('pointerup',pointer));
+ await wait(()=>document.querySelector('.freeTextEditor .internal[contenteditable="true"]'),'toolbar did not create FreeText');
+ const texts=Array.from({length:10},(_,n)=>`第${n+1}次 中文 α ≥ ${n+10}`);
+ for(let round=0;round<10;round++){
+  stage='App Ctrl+S round '+(round+1);
+  if(!round){document.querySelector('.freeTextEditor').dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,button:0,detail:2}));await wait(()=>document.querySelector('.freeTextEditor .internal[contenteditable="true"]'),'first FreeText not editable');}
+  if(round){document.querySelector('[aria-label="阅读与选择"]').click();await frame();await wait(()=>document.querySelector('.annotationLayer .freeTextAnnotation')&&!document.querySelector('[aria-label="文本框"]').disabled,'reader still restoring');const target=document.querySelector('.annotationLayer .freeTextAnnotation');target.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0,pointerId:72,pointerType:'mouse',isPrimary:true}));target.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,button:0,pointerId:72,pointerType:'mouse',isPrimary:true}));target.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,button:0,detail:2}));await wait(()=>document.querySelector('.freeTextEditor .internal[contenteditable="true"]'),'reopened FreeText not editable');}
+  await wait(()=>document.querySelector('[aria-label="文本框"]')?.getAttribute('aria-pressed')==='true','text edit mode not ready');await frame();
+  const editor=document.querySelector('.freeTextEditor .internal[contenteditable="true"]'),line=document.createElement('div'),text=texts[round];
+  editor.focus();editor.dispatchEvent(new FocusEvent('focus'));line.textContent=text;editor.replaceChildren(line);editor.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));await frame();
+  if(!round){
+   // Exercise the actual new-box resize control and leave enough room for
+   // BOTH prompts; a narrow user box must not be mistaken for a writer fault.
+   document.querySelector('[aria-label="阅读与选择"]').click();await frame();document.querySelector('[aria-label="文本框"]').click();await frame();
+   const box=document.querySelector('.freeTextEditor'),handle=box.querySelector('[data-handle="MR"]');check(handle&&!handle.disabled,'new FreeText resize handle missing');
+   const r=box.getBoundingClientRect(),p={bubbles:true,cancelable:true,button:0,pointerId:73,pointerType:'mouse',isPrimary:true,clientX:r.right,clientY:r.top+r.height/2};
+   handle.dispatchEvent(new PointerEvent('pointerdown',p));window.dispatchEvent(new PointerEvent('pointermove',{...p,clientX:p.clientX+220}));window.dispatchEvent(new PointerEvent('pointerup',{...p,clientX:p.clientX+220}));await frame();
+   check(box.getBoundingClientRect().width>r.width+150,'new FreeText resize ineffective');
+  }
+  // Actual App inline UI, real m5 IPC/SQLite and local HTTP/SSE transport.
+  document.querySelector('[aria-label="阅读与选择"]').click();await frame();document.activeElement?.blur();
+  writeSlot('inline',round%2?'auxiliary':'main');
+  document.body.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'3',code:'Digit3',ctrlKey:true,shiftKey:true}));
+  await wait(()=>document.querySelector('[aria-label="确认批注"]')&&!document.querySelector('[aria-label="确认批注"]').disabled,'inline result did not become confirmable');
+  const answer=document.querySelector('[aria-label="回答输出区域"]').textContent;
+  check(answer.includes('MOCK_HTTP '+(round%2?'auxiliary':'main')),'inline used wrong model/result');
+  document.body.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'s',code:'KeyS',ctrlKey:true}));await frame();
+  check(document.querySelector('[aria-label="回答输出区域"]')?.textContent===answer&&notice().includes('请先确认或取消'),'Ctrl+S discarded unconfirmed result');
+  if(round===0){document.querySelector('[aria-label="确认批注"]').click();await wait(()=>!document.querySelector('[aria-label="临时原位解释"]'),'inline confirm did not close');document.querySelector('[aria-label="撤销"]').click();await frame();}
+  else{document.querySelector('[aria-label="取消原位解释"]').click();await wait(()=>!document.querySelector('[aria-label="临时原位解释"]'),'inline cancel did not close');}
+  inlineRows.push({round:round+1,status:'PASS',slot:round%2?'auxiliary':'main',complete:true,saveKeptResult:true,confirmed:round===0});
+  // Remove a SAVED Ink on even rounds; re-create on odd rounds. This exercises
+  // the exact second-save free-xref regression through the actual App eraser.
+  if(round%2){document.querySelector('[aria-label="橡皮擦"]').click();await wait(()=>document.querySelector('.inkEditor')&&!document.querySelector('.inkEditor').hidden,'saved ink editor absent before erase');await frame();const ink=document.querySelector('.inkEditor');const r=ink.getBoundingClientRect(),p={bubbles:true,cancelable:true,button:0,pointerId:200+round,pointerType:'mouse',isPrimary:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2};ink.dispatchEvent(new PointerEvent('pointerdown',p));ink.dispatchEvent(new PointerEvent('pointerup',p));await frame();check(!ink.isConnected,'App eraser did not delete saved Ink');}
+  else if(round){document.querySelector('[aria-label="自由笔画"]').click();await drawInk(200+round);await frame();}
+  document.querySelector('[aria-label="阅读与选择"]').click();await frame();
+  const beforeFrames=animationFrames,beforeBusy=busyFrames,saveStart=performance.now();
+  if(evidenceOnly)observation={round:round+1,stages:{},counts:{},maxFrameGapMs:0};
+  // Repeated Ctrl+S before completion must still yield ONE native commit.
+  for(let i=0;i<4;i++)document.body.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:'s',code:'KeyS',ctrlKey:true}));await frame();
+  await wait(()=>!document.querySelector('.shell').inert&&notice().includes('已保存。'),'actual original save failed');
+  check(!document.querySelector('.document-tab.active')?.textContent.includes('●'),'dirty state not cleared');
+  check(busyFrames>beforeBusy,'no animation frame during busy save');metrics.push({round:round+1,wallMs:performance.now()-saveStart,frames:animationFrames-beforeFrames,busyFrames:busyFrames-beforeBusy,stages:Object.fromEntries(performance.getEntriesByType('measure').filter(e=>e.name.startsWith('pdf-save:')).map(e=>[e.name,e.duration]))});
+  if(evidenceOnly){await wait(()=>document.querySelector('.page[data-loaded="true"]')&&!document.querySelector('[aria-label="文本框"]').disabled,'reader not usable after save');observation.readyWallMs=performance.now()-saveStart;saveEvidence.push(observation);observation=null;}
+  const batch=await invoke('pick_pdfs');check(batch.documents.length===1,'native disk reopen denied');const inspected=await inspect(batch.documents[0],text,round%2===0);const bound=await invoke('m4_bind_document',{grantId:batch.documents[0].grantId,pageCount:1});check(bound.documentId===documentId,'document identity changed');const history=await invoke('m4_messages',{bindingId:bound.bindingId});check(history.some(m=>m.content==='Synthetic save-loop history'),'history lost');check(history.some(m=>m.role==='assistant'&&m.content.includes('MOCK_HTTP main')&&m.content.includes('style=selected')),'selected style did not reach HTTP system instruction');inspected.historyRestored=true;await invoke('release_pdf',{grantId:batch.documents[0].grantId});
+  rows.push({test:stage,status:'PASS',...inspected});await closeOpen();
+ }
+ stage='App Save As regression';document.querySelector('[aria-label="更多操作"]').click();await frame();document.querySelector('[aria-label="另存为批注副本"]').click();await frame();
+ await wait(()=>notice().includes('批注副本已保存')&&document.querySelector('.saved-copy-action'),'actual Save As failed');
+ document.querySelector('.saved-copy-action').click();await wait(()=>document.querySelector('.document-tab.active')?.textContent.includes('export-00.pdf')&&document.querySelector('.annotationLayer .freeTextAnnotation')&&!document.querySelector('[aria-label="文本框"]').disabled,'saved copy did not open in App');
+ check(document.querySelectorAll('.document-tab').length===2,'Save As replaced the original tab');
+ const batch=await invoke('pick_pdfs'),unchanged=await inspect(batch.documents[0],texts.at(-1),false);await invoke('release_pdf',{grantId:batch.documents[0].grantId});check(unchanged.sha256===rows.at(-1).sha256,'Save As changed original');
+ rows.push({test:stage,status:'PASS',...unchanged});
+ await report({schema:1,status:'PASS',rows,inlineRows,inkEvidence,inkDirty:'stroke/undo/redo/delete/after-save PASS',metrics,...(evidenceOnly?{evidenceOnly,saveEvidence}:{}),scope:'Hidden production App, ten actual PDF.js edits/deletions/commits/reopens and ten inline HTTP mock requests, actual release IPC, grants, SQLite; no desktop automation; native pickers alone are fixed synthetic paths'});
+ }
+}catch(error){await report({schema:1,status:'FAIL',stage,error:String(error),inkEvidence,pageErrors,buttons:[...document.querySelectorAll('.toolbar-start button')].map(b=>({label:b.ariaLabel,disabled:b.disabled})),code:error?.code??null,comparison:globalThis.__SAVE_APP_DIAGNOSTIC__??null,detail:typeof error?.message==='string'?error.message.slice(0,300):null,notice:notice(),rows,editors:[...document.querySelectorAll('.freeTextEditor,.inkEditor,.highlightEditor')].map(e=>({type:e.className,style:e.getAttribute('style'),text:e.textContent})),ui:document.body.textContent.slice(-2500)});}finally{animationRunning=false;if(app)await unmount(app);}
+</script>

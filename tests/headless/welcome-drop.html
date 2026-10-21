@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><title>Isolated PDF drop feedback</title>
+<div id="app"></div>
+<script type="module">
+import '/src/app.css';import {mount,unmount} from 'svelte';import App from '/src/App.svelte';import {editorFixture} from '/tests/frontend/editor-fixture.ts';
+const nonce=new URLSearchParams(location.search).get('nonce');
+const report=value=>fetch('/__test-result/'+nonce,{method:'POST',body:JSON.stringify(value)});
+window.addEventListener('error',e=>report({status:'FAIL',error:String(e.error??e.message)}));
+window.addEventListener('unhandledrejection',e=>report({status:'FAIL',error:String(e.reason)}));
+const sleep=ms=>new Promise(r=>setTimeout(r,ms)),wait=async fn=>{for(let n=0;n<400;n++){if(fn())return;await sleep(20);}throw Error('Expected UI state timed out');},check=(v,m)=>{if(!v)throw Error(m);};
+let app;
+const drag=(target,type,transfer)=>{const event=new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:transfer});target.dispatchEvent(event);return event;};
+try{
+ app=mount(App,{target:document.querySelector('#app')});await wait(()=>document.querySelector('.empty-state h1'));
+ const layout=document.querySelector('main'),empty=document.querySelector('.empty-state'),data=new DataTransfer();data.items.add(new File([editorFixture('Synthetic drop body')],'合成样例.PDF',{type:'application/pdf'}));
+ const internal=new DataTransfer();internal.setData('text/plain','internal editor drag');check(!drag(layout,'dragover',internal).defaultPrevented,'internal non-file drag was claimed');check(!document.querySelector('.pdf-drop-hint'),'internal drag triggered overlay');
+ drag(layout,'dragenter',data);await sleep(30);let hint=document.querySelector('.pdf-drop-hint');check(hint?.textContent.includes('释放鼠标'),'PDF drag hint missing');check(getComputedStyle(hint).pointerEvents==='none','overlay intercepts drag');
+ drag(empty,'dragenter',data);drag(empty,'dragleave',data);await sleep(30);check(document.querySelector('.pdf-drop-hint'),'child enter/leave flickers overlay');
+ drag(layout,'dragleave',data);await sleep(30);check(!document.querySelector('.pdf-drop-hint'),'leave did not clear overlay');
+ const invalid=new DataTransfer();invalid.items.add(new File(['synthetic'],'sample.txt',{type:'text/plain'}));drag(layout,'dragenter',invalid);await sleep(30);check(document.querySelector('.pdf-drop-hint.invalid')?.textContent.includes('仅支持 PDF'),'non-PDF hint missing');drag(layout,'drop',invalid);await sleep(100);check(!document.querySelector('.pdf-drop-hint'),'drop left overlay behind');check(document.body.textContent.includes('请选择 PDF'),'non-PDF drop lacks clear refusal');
+ drag(layout,'dragenter',data);drag(layout,'drop',data);await wait(()=>document.querySelector('.page[data-loaded="true"]'));check(!document.querySelector('.pdf-drop-hint'),'successful drop left overlay behind');check(document.body.textContent.includes('合成样例.PDF'),'dropped PDF did not open');
+ drag(layout,'dragenter',data);await sleep(30);check(!document.querySelector('.pdf-drop-hint'),'welcome overlay appeared over an open PDF');drag(layout,'dragleave',data);
+ await unmount(app);app=null;await report({status:'PASS',pdfDropOpens:true,invalidRefusal:true,nestedDragStable:true,leaveAndDropClear:true,overlayPointerTransparent:true,internalDragUnclaimed:true,noOverlayOverOpenPdf:true,providerCalls:0,scope:'production App in disposable headless browser; native Windows drag Not run'});
+}catch(e){if(app)await unmount(app).catch(()=>{});await report({status:'FAIL',error:String(e)});}
+</script>

@@ -1,0 +1,48 @@
+[package]
+name = "ai-native-pdf-reader"
+version = "1.0.3"
+edition = "2021"
+rust-version = "1.98"
+publish = false
+
+[features]
+default = []
+# Only a future, explicitly approved release build may enable real providers.
+real-provider = []
+# Mock-only disposable-copy Writer candidate; never enables original save.
+unicode-writer-candidate = []
+# Project-only, guest-only CLI lab. Never part of NSIS/release configuration.
+worker-isolation-cli = []
+# Explicit project-only hidden Release IPC validation. Never enabled in packages.
+save-chain-lab = []
+
+[build-dependencies]
+tauri-build = { version = "=2.7.2", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.3", features = [] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.152"
+uuid = { version = "=1.28.0", features = ["v4"] }
+sha2 = "=0.10.9"
+rusqlite = { version = "=0.40.2", features = ["bundled", "backup"] }
+rfd = { version = "=0.17.2", default-features = false }
+reqwest = { version = "=0.13.5", default-features = false, features = ["json", "native-tls"] }
+tokio = { version = "=1.53.2", features = ["time", "sync", "macros", "net"] }
+base64 = "=0.23.1"
+flate2 = "=1.1.10"
+crc32fast = "=1.5.2"
+webview2-com = "=0.39.1"
+windows = "=0.62.2"
+windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_WindowsProgramming", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_DataExchange", "Win32_System_Pipes", "Win32_System_IO", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_Security_Isolation", "Win32_Security_Authorization", "Win32_Security_Credentials"] }
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
+
+[profile.release]
+strip = true

@@ -1,0 +1,32 @@
+<!doctype html><meta charset="utf-8"><title>M6 isolated PDF editor test</title>
+<style>html,body{margin:0;}#container{position:absolute;inset:0;overflow:auto;}#result{position:fixed;z-index:100;left:0;top:0;background:white;}</style>
+<div id="container"><div id="pages" class="pdfViewer"></div></div><pre id="result">RUNNING</pre>
+<script type="module">
+import 'pdfjs-dist/web/pdf_viewer.css';
+import {createPdfReader} from '/src/lib/pdf-reader.ts';
+import {readingFixture} from '/tests/frontend/reading-fixture.ts';
+const result=document.querySelector('#result'),container=document.querySelector('#container');let state;
+const reader=createPdfReader(container,document.querySelector('#pages'),s=>state=s);
+const wait=async predicate=>{for(let i=0;i<250;i++){if(predicate())return;await new Promise(r=>setTimeout(r,40));}throw Error('editor not ready');};
+const check=(value,message)=>{if(!value)throw Error(message);};
+const report=async value=>{result.textContent=JSON.stringify(value);await fetch(`/__test-result/${new URL(location.href).searchParams.get('nonce')}`,{method:'POST',body:JSON.stringify(value)});};
+try{
+ const bytes=readingFixture(14);await reader.open({name:'Synthetic only.pdf',size:bytes.length,read:async()=>bytes});
+ await wait(()=>state?.viewReady&&state.editingAllowed);
+ await wait(()=>document.querySelector('.page[data-page-number="1"] .annotationEditorLayer'));
+ await reader.addText({page:1,rect:[40,400,300,530],text:'中文 α ≤ β',fontSize:12});
+ let draft=reader.draft();check(draft.entries.length===1,'confirm did not create one normal annotation');check(draft.entries[0].value==='中文 α ≤ β','Unicode text changed');
+ check(draft.entries[0].rect.every((n,i)=>Math.abs(n-[40,400,300,530][i])<0.5),'normal answer rectangle changed');
+ check(document.querySelector('.freeTextEditor')?.getBoundingClientRect().width>0,'confirmed annotation is hidden in reading mode');
+ reader.edit('undo');await new Promise(r=>setTimeout(r,80));check(reader.draft().entries.length===0,'undo did not remove confirmed annotation');
+ reader.edit('redo');await new Promise(r=>setTimeout(r,80));check(reader.draft().entries.length===1,'redo did not restore annotation');
+ reader.annotation('read');await wait(()=>state.annotationMode==='read');
+ await new Promise(r=>setTimeout(r,80));check([...document.querySelectorAll('.freeTextEditor,.freeTextAnnotation')].some(n=>n.getBoundingClientRect().width>0),'confirmed annotation disappeared after returning to reading');
+ const rotated=7;reader.goToPage(rotated);await wait(()=>document.querySelector(`.page[data-page-number="${rotated}"] .annotationEditorLayer`));
+ await reader.addText({page:rotated,rect:[30,80,260,200],text:'旋转页 β ≥ 10',fontSize:12});
+ draft=reader.draft();check(draft.entries.length===2,'rotated confirmation missing');check(draft.entries.some(e=>e.pageIndex===rotated-1&&e.value==='旋转页 β ≥ 10'),'rotated text/page changed');
+ const entry=draft.entries.find(e=>e.pageIndex===rotated-1);check(entry.rect.every((n,i)=>Math.abs(n-[30,80,260,200][i])<0.5),'rotated answer rectangle changed');
+ const value={status:'PASS',confirmed:2,undo:true,redo:true,unicode:true,entries:draft.entries.map(e=>({page:e.pageIndex+1,rect:e.rect,value:e.value,rotation:e.rotation}))};
+ await reader.dispose();await report(value);
+}catch(e){const diagnostic={status:state?.status,viewReady:state?.viewReady,editingAllowed:state?.editingAllowed,error:state?.error,canvas:!!document.querySelector('canvas'),layer:!!document.querySelector('.annotationEditorLayer')};await reader.dispose().catch(()=>{});await report({status:'FAIL',error:String(e),diagnostic});}
+</script>

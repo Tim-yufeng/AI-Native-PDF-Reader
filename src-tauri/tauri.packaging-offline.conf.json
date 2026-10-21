@@ -1,0 +1,28 @@
+{
+  "build": {"features": []},
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "useLocalToolsDir": true,
+    "category": "Education",
+    "shortDescription": "Local PDF reader — offline WebView2 runtime validation candidate",
+    "fileAssociations": [],
+    "resources": {},
+    "externalBin": [],
+    "createUpdaterArtifacts": false,
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {"type": "offlineInstaller", "silent": true},
+      "bundleVCRuntime": false,
+      "nsis": {
+        "installMode": "currentUser",
+        "template": "installer/reader.nsi",
+        "installerIcon": "icons/icon.ico",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false
+      },
+      "wix": {"upgradeCode": "6187bfd4-930d-4a5f-8acb-8ff0d8d645d2", "language": "zh-CN"}
+    }
+  }
+}

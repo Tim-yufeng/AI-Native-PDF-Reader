@@ -1,0 +1,38 @@
+<!doctype html><meta charset="utf-8"><title>Isolated identical bytes IPC replay</title>
+<script type="module">
+import {invoke} from '@tauri-apps/api/core';
+import {saveHeaders} from '/src/lib/save-transport.ts';
+import {validateOriginalOutput} from '/src/lib/original-output.ts';
+import {GlobalWorkerOptions} from 'pdfjs-dist';
+import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+GlobalWorkerOptions.workerSrc=workerUrl;
+const check=(ok,message)=>{if(!ok)throw Error(message);},rows=[];
+const hash=async b=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(v=>v.toString(16).padStart(2,'0')).join('');
+const report=async value=>{const raw=JSON.stringify(value);for(let n=0;n<raw.length;n+=1500){document.title='SAVE_CHAIN_PART:'+n/1500+':'+raw.slice(n,n+1500);await new Promise(r=>setTimeout(r,100));}document.title='SAVE_CHAIN_END';};
+try{
+ const get=async name=>new Uint8Array(await(await fetch('/__save_chain_lab/'+name+'.pdf')).arrayBuffer());
+ const [candidate,output]=await Promise.all([get('ipc-candidate'),get('ipc-output')]);
+ check(output.length===2571880&&candidate.length===2316424,'fixed replay sizes differ');
+ check(await hash(output)==='a4c3c7fcee7f0c65cd0d4bc15821f224cd40151fff8158778d403b086268538e','fixed output differs');
+ await validateOriginalOutput(candidate,output,new AbortController().signal);
+ // Alternate order to avoid making all cold runs belong to one transport.
+ for(const [index,mode]of ['json','raw','raw','json','json','raw'].entries()){
+  const descriptor=globalThis.__SAVE_CHAIN_INPUTS__['ipc-'+index];
+  const binding=await invoke('m4_bind_document',{grantId:descriptor.grantId,pageCount:1});
+  const content='Synthetic IPC replay '+index;await invoke('m4_add_message',{bindingId:binding.bindingId,content,page:1,parentId:null});
+  const taskId=await invoke('begin_unicode_export',{grantId:descriptor.grantId});
+  let start=performance.now();const args=mode==='json'?{taskId,bindingId:binding.bindingId,candidate:Array.from(candidate),output:Array.from(output)}:output;
+  const packingMs=performance.now()-start;start=performance.now();const options=mode==='raw'?saveHeaders(taskId,candidate.length,binding.bindingId):undefined;const headerMs=performance.now()-start;
+  // Observe the real encoder once, without a second JSON encoding or a delay.
+  const stringify=JSON.stringify;let encodingMs=0,encodingCalls=0,jsonCharacters=0;
+  JSON.stringify=function(value,...rest){const t=performance.now(),result=stringify.call(JSON,value,...rest);if(value===args){encodingMs+=performance.now()-t;encodingCalls++;jsonCharacters=result.length;}return result;};
+  let response,invokeMs;start=performance.now();try{const pending=invoke('save_original_pdf',args,options);JSON.stringify=stringify;response=await pending;invokeMs=performance.now()-start;}finally{JSON.stringify=stringify;await invoke('cancel_unicode_export',{taskId});}
+  check(mode==='raw'?encodingCalls===0:encodingCalls===1,'unexpected PDF encoding path');
+  check(response.hash===await hash(output)&&response.binding?.documentId===binding.documentId&&!response.historyPending&&!response.reopenRequired&&!response.cleanupPending,'save/history handoff failed');
+  const messages=await invoke('m4_messages',{bindingId:response.binding.bindingId});check(messages.some(m=>m.content===content),'history missing');
+  await invoke('release_pdf',{grantId:response.descriptor.grantId});
+  rows.push({status:'PASS',mode,index,packingMs,headerMs,encodingMs,encodingCalls,jsonCharacters,wireBytes:mode==='raw'?output.length:jsonCharacters,invokeMs,ipcInclusiveMs:invokeMs+packingMs+headerMs,timings:response.timings,frameworkTransportResidualMs:invokeMs-encodingMs-response.timings.commandMs});
+ }
+ await report({status:'PASS',scope:'ipc-replay',rows,limitations:'Identical old captured bytes, actual native saves/history. Residual includes framework JSON parsing, transport and callback scheduling; not pure transmission.'});
+}catch(error){await report({status:'FAIL',scope:'ipc-replay',error:String(error),rows});}
+</script>

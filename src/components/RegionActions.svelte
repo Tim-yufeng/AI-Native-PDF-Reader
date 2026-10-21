@@ -1,0 +1,8 @@
+<script lang="ts">
+ import {placeInline} from '../lib/inline-position';import type {PageReader,Region} from '../lib/ai-context';import Icon from './Icon.svelte';
+ let {reader,container,box,chat,explain,cancel,canExplain=true,explainDisabledReason='本地数据与 PDF 身份尚未就绪。'}:{reader:PageReader;container:HTMLElement;box:Region;chat:()=>void;explain:()=>void;cancel:()=>void;canExplain?:boolean;explainDisabledReason?:string}=$props();
+</script>
+<div class="region-actions" use:placeInline={{reader,container,box}} aria-label="已框选区域">
+ <div class="inline-tools" role="toolbar" aria-label="区域操作"><button title="加入输入区，等待提问，不立即发送" onclick={chat}>加入对话</button><button title={canExplain?'在所选区域旁一键生成临时解释':explainDisabledReason} disabled={!canExplain} onclick={explain}>原位解释</button><button title="取消选区" aria-label="取消待用区域" onclick={cancel}><Icon name="close"/></button></div>
+</div>
+<style>.region-actions{position:fixed;z-index:25;border:1px solid #608eae;background:#6a92b516;pointer-events:none;}.inline-tools{position:absolute;bottom:calc(100% + 5px);left:var(--inline-tools-left,0px);display:flex;gap:2px;background:white;padding:3px;border:1px solid #cbd6df;border-radius:5px;box-shadow:0 2px 8px #24374b24;pointer-events:auto;white-space:nowrap;}.region-actions:global([data-tools-below=true]) .inline-tools{top:calc(100% + 5px);bottom:auto;}button{height:25px;border:0;border-radius:3px;background:transparent;padding:3px 6px;color:#456078;font:11px 'Segoe UI','Microsoft YaHei',sans-serif;}button:hover:not(:disabled){background:#e8eff5;}button:active:not(:disabled){background:#d9e5ee;}button:disabled{opacity:.4;}button :global(svg){width:15px;height:15px;}</style>

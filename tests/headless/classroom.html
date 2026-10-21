@@ -1,0 +1,62 @@
+<!doctype html><meta charset="utf-8"><title>Classroom regressions — synthetic PDF only</title>
+<style>#container{position:absolute;inset:0;overflow:auto}#thumbs{position:fixed;right:0;top:0;width:164px;height:600px;z-index:40;background:white}#thumbs .thumbnail-sidebar{height:100%}</style>
+<div id="container"><div id="pages" class="pdfViewer"></div></div><div id="thumbs"></div>
+<script type="module">
+import 'pdfjs-dist/web/pdf_viewer.css';import '/src/app.css';import '/src/lib/freetext-control.css';
+import {mount,unmount} from 'svelte';import Thumbnails from '/src/components/Thumbnails.svelte';
+import {createPdfReader} from '/src/lib/pdf-reader.ts';import {loadMupdf,appendAnnotationRevision} from '/src/lib/mupdf-writer.ts';
+import {editorFixture} from '/tests/frontend/editor-fixture.ts';
+const container=document.querySelector('#container'),pages=document.querySelector('#pages'),cases=[];
+let state,stage='load',thumbs;
+const reader=createPdfReader(container,pages,s=>state=s),sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const check=(ok,message)=>{if(!ok)throw Error(stage+': '+message);},frames=async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);};
+const wait=async(fn,message)=>{for(let i=0;i<400;i++){if(fn())return;await sleep(20);}throw Error(stage+': '+message);};
+const pointer=(node,type,x,y)=>node.dispatchEvent(new PointerEvent(type,{bubbles:true,cancelable:true,button:0,pointerType:'mouse',pointerId:1,isPrimary:true,clientX:x,clientY:y}));
+let openedBytes;
+const source=bytes=>{openedBytes=bytes;return{name:'Disposable classroom.pdf',size:bytes.length,read:async()=>bytes.slice()};};
+const report=async value=>fetch('/__test-result/'+new URLSearchParams(location.search).get('nonce'),{method:'POST',body:JSON.stringify(value)});
+const original=editorFixture('Classroom synthetic body');
+const reading=()=>{const page=pages.querySelector('.page[data-page-number="'+state.page+'"]');return{page:state.page,scale:state.scale,top:container.scrollTop-page.offsetTop,left:container.scrollLeft,scrollTop:container.scrollTop,pageTop:page.offsetTop};};
+const sameReading=(anchor,operation)=>{const current=reading();check(current.page===anchor.page&&Math.abs(current.scale-anchor.scale)<.00001&&Math.abs(current.top-anchor.top)<2&&Math.abs(current.left-anchor.left)<2,operation+' changed reading position '+JSON.stringify({anchor,current}));};
+try{
+ const mupdf=await loadMupdf(),font=new Uint8Array(await(await fetch('/noto/NotoSansSC-Regular-v41.ttf')).arrayBuffer());
+ await reader.open(source(original));await wait(()=>state.viewReady&&state.editingAllowed,'reader readiness');reader.zoom(1);await frames();
+ const output=async()=>appendAnnotationRevision(mupdf,await reader.testWriterBytes(),font,openedBytes).bytes;
+ const inspect=bytes=>{const doc=mupdf.PDFDocument.openDocument(bytes,'application/pdf');try{return Array.from({length:doc.countPages()},(_,i)=>doc.loadPage(i).getAnnotations().map(a=>a.getType()));}finally{doc.destroy();}};
+ stage='overflow delete save';reader.goToPage(3);await wait(()=>state.page===3,'middle page');await frames();
+ await reader.addText({page:3,rect:[80,100,180,125],text:'Overflowing classroom annotation '.repeat(12),fontSize:14,color:'#19334d'});await frames();
+ let refusal;try{await output();}catch(e){refusal=e.code;}
+ check(refusal==='writer_text_overflow','real overflow was not refused: '+refusal);
+ const before=reader.draft().entries.filter(e=>e.annotationType===3&&!e.deleted);check(before.length===1,'overflow editor missing');
+ reader.edit('delete');await frames();check(!pages.querySelector('.freeTextEditor'),'deleted editor remains');
+ const after=reader.draft().entries.filter(e=>e.annotationType===3&&!e.deleted),saved=await output();
+ check(after.length===0&&inspect(saved).flat().length===0,'deleted overflow serialized or saved');
+ cases.push({case:stage,initialRefusal:refusal,deletedEditors:0,serializedText:after.length,savedAnnotations:0});
+ stage='middle-page tool changes';await reader.open(source(original));await wait(()=>state.viewReady&&state.editingAllowed,'reopen readiness');reader.zoom(1);reader.goToPage(3);
+ // Start before offscreen canvases finish rounding. Browser scroll anchoring
+ // compensates for earlier page heights; the visible page-relative position
+ // must stay fixed, even when the document's absolute scrollTop changes.
+ container.scrollTop+=75;const anchor=reading(),positions=[];
+ for(const mode of ['highlight','text','ink','erase','read','text','read']){await reader.annotation(mode);await frames();positions.push({mode,...reading()});sameReading(anchor,'tool '+mode);}
+ await reader.addText({page:3,rect:[100,200,300,250],text:'Middle page annotation',fontSize:14});await reader.annotation('read');await frames();
+ for(const action of ['undo','redo']){reader.edit(action);await frames();sameReading(anchor,action);}
+ await output();await frames();sameReading(anchor,'serialization');
+ cases.push({case:stage,anchor,positions,positionMetric:'page-relative CSS pixels',earlyRender:true,undoRedo:true,serialization:true});
+ stage='thumbnail zoom stability';let renders=0;const observed={getPage:async n=>{renders++;return reader.getPage(n);}};
+ thumbs=mount(Thumbnails,{target:document.querySelector('#thumbs'),props:{reader:observed,token:state.token,total:4,page:3,jump:n=>reader.goToPage(n)}});
+ await wait(()=>document.querySelectorAll('#thumbs canvas').length===4&&[...document.querySelectorAll('#thumbs canvas')].every(c=>c.width>0),'thumbnails ready');await sleep(150);
+ const canvases=[...document.querySelectorAll('#thumbs canvas')],renderCount=renders;
+ for(const zoom of [.75,1.25,1,1.5,1]){reader.zoom(zoom);container.scrollTop+=20;await frames();}
+ check(renders===renderCount&&canvases.every((c,i)=>c===document.querySelectorAll('#thumbs canvas')[i]&&c.width>0),'zoom rebuilt or cleared thumbnails');
+ cases.push({case:stage,renders:renderCount,afterZoom:renders,canvasesPreserved:true});
+ await unmount(thumbs);stage='thumbnail rapid scroll return';renders=0;const counts=new Map();
+ const repeated={getPage:async n=>{counts.set(n,(counts.get(n)??0)+1);renders++;return reader.getPage((n-1)%4+1);}};
+ thumbs=mount(Thumbnails,{target:document.querySelector('#thumbs'),props:{reader:repeated,token:state.token,total:30,page:1,jump:()=>{}}});
+ const thumbnailsReady=()=>[...document.querySelectorAll('#thumbs canvas')].every(c=>c.width>0&&c.getContext('2d').getImageData(0,0,1,1).data[3]>0);
+ await wait(()=>document.querySelectorAll('#thumbs canvas').length>0&&thumbnailsReady(),'first previews');const initialPages=[...counts.keys()];
+ const scroller=document.querySelector('.thumbnail-scroll');scroller.scrollTop=18*170;scroller.dispatchEvent(new Event('scroll'));await wait(()=>document.querySelector('[aria-label="跳转第 19 页"]')&&thumbnailsReady(),'far previews');
+ scroller.scrollTop=0;scroller.dispatchEvent(new Event('scroll'));await wait(()=>document.querySelector('[aria-label="跳转第 1 页"]')&&thumbnailsReady(),'return previews');
+ check(initialPages.every(n=>counts.get(n)===1),'return scroll redraws previously completed previews '+JSON.stringify([...counts]));cases.push({case:stage,firstPages:initialPages,reused:true});
+ await unmount(thumbs);thumbs=null;await reader.dispose();await report({status:'PASS',cases,providerCalls:0,scope:'synthetic production reader/Writer; no native commit or installed UI claim'});
+}catch(e){if(thumbs)await unmount(thumbs).catch(()=>{});await reader.dispose().catch(()=>{});await report({status:'FAIL',stage,error:String(e),cases,page:state?.page,providerCalls:0});}
+</script>

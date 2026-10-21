@@ -1,0 +1,48 @@
+<!doctype html><meta charset="utf-8"><title>Disposable FreeText auto height</title>
+<style>#container{position:absolute;inset:0;overflow:auto}</style>
+<div id="container"><div id="pages" class="pdfViewer"></div></div>
+<script type="module">
+import 'pdfjs-dist/web/pdf_viewer.css';import '/src/app.css';import '/src/lib/freetext-control.css';
+import {createPdfReader} from '/src/lib/pdf-reader.ts';
+import {loadMupdf,appendAnnotationRevision} from '/src/lib/mupdf-writer.ts';
+import {measureFreeTextBox} from '/src/lib/freetext-layout.ts';
+import {editorFixture} from '/tests/frontend/editor-fixture.ts';
+const report=v=>fetch('/__test-result/'+new URLSearchParams(location.search).get('nonce'),{method:'POST',body:JSON.stringify(v)});
+const sleep=ms=>new Promise(r=>setTimeout(r,ms)),frames=async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);};
+let stage='open',state,baseline,diagnostic;const cases=[],container=document.querySelector('#container'),pages=document.querySelector('#pages');
+const reader=createPdfReader(container,pages,s=>state=s),check=(v,m)=>{if(!v)throw Error(stage+': '+m);};
+const wait=async(fn)=>{for(let n=0;n<400;n++){if(fn())return;await sleep(20);}throw Error(stage+': timed out');};
+const open=async bytes=>{baseline=bytes;await reader.open({name:'Disposable auto height.pdf',size:bytes.length,read:async()=>bytes.slice()});await wait(()=>state.viewReady&&state.editingAllowed);await reader.annotation('text');await wait(()=>pages.querySelector('.page[data-page-number="1"] .annotationEditorLayer.freetextEditing:not(.disabled)')?.getBoundingClientRect().width>0);await frames();};
+const click=node=>{const r=node.getBoundingClientRect();for(const type of ['pointerdown','pointerup'])node.dispatchEvent(new PointerEvent(type,{bubbles:true,cancelable:true,button:0,pointerId:1,pointerType:'mouse',isPrimary:true,clientX:r.left+5,clientY:r.top+5}));};
+const selected=()=>state.selectedText?.rect.slice();
+const width=(r,rotation)=>rotation%180?r[3]-r[1]:r[2]-r[0],height=(r,rotation)=>rotation%180?r[2]-r[0]:r[3]-r[1];
+const contents=(input,text)=>{input.replaceChildren(...text.split('\n').map(t=>{const d=document.createElement('div');d.append(t?document.createTextNode(t):document.createElement('br'));return d;}));input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText'}));};
+try{
+ const mu=await loadMupdf(),font=new Uint8Array(await(await fetch('/noto/NotoSansSC-Regular-v41.ttf')).arrayBuffer());
+ const output=async()=>{const data=await reader.testWriterBytes();try{return appendAnnotationRevision(mu,data,font,baseline).bytes;}catch(e){const d=mu.PDFDocument.openDocument(data,'application/pdf');diagnostic.failedOutput=Array.from({length:4},(_,p)=>d.loadPage(p).getAnnotations().map(a=>({rect:a.getObject().get('Rect').asJS(),rotate:a.getObject().get('Rotate').asJS(),da:a.getObject().get('DA').asString(),text:a.getContents()}))).flat();d.destroy();throw e;}};
+ for(const page of [1,2,3,4])for(const zoom of [.75,1,1.5]){
+  stage=`page ${page} zoom ${zoom}`;await open(editorFixture());reader.goToPage(page);reader.zoom(zoom);await reader.annotation('text');await wait(()=>pages.querySelector(`.page[data-page-number="${page}"] .annotationEditorLayer:not(.disabled)`)?.getBoundingClientRect().width>0);await frames();
+  const rotation=(page-1)*90,rect=[[100,620,300,645],[20,150,45,350],[150,60,350,85],[350,200,375,400]][page-1];
+  await reader.addText({page,rect,text:'开始',fontSize:14});await reader.annotation('text');await frames();
+  const node=pages.querySelector(`.page[data-page-number="${page}"] .freeTextEditor`);click(node);reader.textEdit();await frames();
+  const input=node.querySelector('.internal'),start=selected(),origin=input.getBoundingClientRect(),steps=[];
+  let text='';for(const part of ['中文连续输入，','English words wrap naturally. ','α + β ≤ γ；√2 ≈ 1.414。\n','第二段内容。'.repeat(6)]){
+   text+=part;contents(input,text);await frames();const r=selected();check(Math.abs(width(r,rotation)-width(start,rotation))<.05,'width changed while typing');check(!state.selectedText.overflow,'normal text overflow');const b=input.getBoundingClientRect();check(Math.abs(b.left-origin.left)<.6&&Math.abs(b.top-origin.top)<.6,'text origin moved');steps.push(height(r,rotation));
+  }
+  check(steps.at(-1)>height(start,rotation)+30,'long text did not grow');
+  reader.draft();await frames();const grown=selected();reader.textSize(18);await frames();check(height(selected(),rotation)>height(grown,rotation),'larger font did not grow');
+  const large=selected();reader.edit('undo');await frames();check(state.selectedText.fontSize===14,'font undo failed');reader.edit('redo');await frames();check(state.selectedText.fontSize===18,'font redo failed');
+  // Narrow only the local text width, retaining its height/origin.
+  const narrow=selected();if(rotation===90)narrow[3]-=55;else if(rotation===180)narrow[0]+=55;else if(rotation===270)narrow[1]+=55;else narrow[2]-=55;
+  reader.resizeText(narrow);await frames();check(height(selected(),rotation)>height(large,rotation),'width adjustment did not recalculate height');const narrowHeight=height(selected(),rotation);reader.edit('undo');await frames();check(Math.abs(width(selected(),rotation)-200)<.05&&height(selected(),rotation)<narrowHeight,'width/height undo failed');reader.edit('redo');await frames();check(Math.abs(width(selected(),rotation)-145)<.05&&Math.abs(height(selected(),rotation)-narrowHeight)<.05,'width/height redo failed');
+  await reader.annotation('read');await frames();const before=await reader.testWriterBytes();const probe=mu.PDFDocument.openDocument(before,'application/pdf'),po=probe.loadPage(page-1).getAnnotations()[0].getObject(),pr=po.get('Rect').asJS(),pw=width(pr,rotation);diagnostic={rect:pr,da:po.get('DA').asString(),text:po.get('Contents').asString(),layout:measureFreeTextBox(po.get('Contents').asString(),pw,18)};probe.destroy();const saved=await output();
+  const d=mu.PDFDocument.openDocument(saved,'application/pdf'),a=d.loadPage(page-1).getAnnotations().find(a=>a.getType()==='FreeText'),savedRect=a.getObject().get('Rect').asJS();check(a.getContents()===text,'saved text lost');d.destroy();
+  const candidate=mu.PDFDocument.openDocument(before,'application/pdf');check(JSON.stringify(candidate.loadPage(page-1).getAnnotations()[0].getObject().get('Rect').asJS())===JSON.stringify(savedRect),'save silently resized');candidate.destroy();
+  await open(saved);reader.goToPage(page);await reader.annotation('text');await wait(()=>pages.querySelector(`.page[data-page-number="${page}"] .freeTextEditor`));const reopened=pages.querySelector(`.page[data-page-number="${page}"] .freeTextEditor`);click(reopened);reader.textEdit();await frames();check(state.selectedText.fontSize===18,'font changed on reopen');check(selected().every((v,i)=>Math.abs(v-savedRect[i])<.05),'rect changed on reopen');contents(reopened.querySelector('.internal'),text+'\n重开后继续输入。');await frames();check(!state.selectedText.overflow,'reopened edit overflow');await output();
+  cases.push({page,rotation,zoom,steps,inputGrowth:true,fontUndoRedo:true,widthGrowth:true,saveRectUnchanged:true,reopenEdit:true});
+ }
+ stage='native newly typed editor';await open(editorFixture());reader.zoom(1);await reader.annotation('text');await frames();const layer=pages.querySelector('.page[data-page-number="1"] .annotationEditorLayer'),lr=layer.getBoundingClientRect();for(const type of ['pointerdown','pointerup'])layer.dispatchEvent(new PointerEvent(type,{bubbles:true,cancelable:true,button:0,pointerId:2,pointerType:'mouse',isPrimary:true,clientX:lr.left+70,clientY:lr.top+100}));await wait(()=>pages.querySelector('.internal[contenteditable="true"]'));const typed=pages.querySelector('.internal[contenteditable="true"]');contents(typed,'第一句');await frames();const initial=selected();contents(typed,'连续输入的中文。English α ≤ β。'.repeat(18));await frames();check(selected()[2]-selected()[0]===initial[2]-initial[0],'native typed width changed');check(selected()[3]-selected()[1]>initial[3]-initial[1],'native typed did not grow');await output();
+ stage='page boundary and deletion';await open(editorFixture());reader.zoom(1);await reader.addText({page:1,rect:[80,20,180,45],text:'页面边缘的长文字。'.repeat(20),fontSize:18});await frames();check(state.overflowPages.includes(1),'boundary warning missing');reader.focusOverflow(1);check(state.selectedText?.overflow,'problem box not selected');let refused=false;try{await output();}catch(e){refused=e.code==='writer_text_overflow';}check(refused,'real overflow not refused');reader.edit('delete');await frames();check(!state.overflowPages.length,'deleted warning remains');await reader.addText({page:1,rect:[80,500,300,530],text:'删除后正常保存',fontSize:14});await output();
+ await reader.dispose();await report({status:'PASS',cases,nativeTyping:true,boundaryWarningAndLocate:true,realOverflowRefused:true,deleteResave:true,providerCalls:0});
+}catch(error){await reader.dispose().catch(()=>{});await report({status:'FAIL',stage,error:String(error),state,diagnostic,cases});}
+</script>

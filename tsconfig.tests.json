@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["node"] },
+  "include": ["tests/frontend/**/*.ts", "src/lib/document-source.ts", "src/lib/reader-session.ts"]
+}

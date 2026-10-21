@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AI-Native PDF Reader",
+  "version": "1.0.3",
+  "identifier": "io.github.ainativepdfreader",
+  "build": {
+    "beforeDevCommand": "npm run prepare:assets && node scripts/desktop-frontend.mjs",
+    "devUrl": "http://127.0.0.1:43182/",
+    "beforeBuildCommand": "npm run build",
+    "beforeBundleCommand": "node scripts/check-release-artifact.mjs",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "create": false,
+        "label": "main",
+        "title": "AI-Native PDF Reader 1.0.2",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 400,
+        "minHeight": 400,
+        "dragDropEnabled": true,
+        "useHttpsScheme": true,
+        "zoomHotkeysEnabled": false
+      }
+    ],
+    "security": {
+      "capabilities": [
+        "reader"
+      ],
+      "csp": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'",
+      "devCsp": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost ws://127.0.0.1:43182; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": []
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "scope": "MuPDF.js writer assets the renderer fetches from the packaged frontend. The running application compiles this lock in and verifies the bytes it would serve before any writer starts; scripts/check-writer-assets.mjs verifies the same bytes before NSIS packaging. Update the numbers here only as a deliberate, reviewable change of the pinned inputs.",
+  "assets": [
+    {
+      "path": "mupdf/mupdf-wasm.wasm",
+      "request": "/mupdf/mupdf-wasm.wasm",
+      "bytes": 10409826,
+      "sha256": "5a30ef7b027f541ea8fc54e7c73f16414b0b59940741a12efe5e55f1fd0a99d7",
+      "source": "node_modules/mupdf/dist/mupdf-wasm.wasm",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "path": "noto/NotoSansSC-Regular-v41.ttf",
+      "request": "/noto/NotoSansSC-Regular-v41.ttf",
+      "bytes": 10559284,
+      "sha256": "d45f67f0a7c0ca3f256950777ce6a61cc7ce5f9696d02900cbbaac25f8aa7d16",
+      "source": "worker/fonts/NotoSansSC-Regular-v41.ttf",
+      "license": "OFL-1.1"
+    }
+  ]
+}

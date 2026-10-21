@@ -1,0 +1,37 @@
+<!doctype html><meta charset="utf-8"><title>Inline complete PDF search</title>
+<style>html,body{margin:0;height:100%}#container{position:absolute;inset:0;overflow:auto}</style>
+<div id="container"><div id="pages" class="pdfViewer"></div></div><div id="app"></div>
+<script type="module">
+import 'pdfjs-dist/web/pdf_viewer.css';import '/src/app.css';import {mount,unmount,tick} from 'svelte';
+import InlineExplanation from '/src/components/InlineExplanation.svelte';import {createPdfReader} from '/src/lib/pdf-reader.ts';import {readingFixture} from '/tests/frontend/reading-fixture.ts';import {defaultContext,defaultInputs} from '/src/lib/preferences.ts';
+const nonce=new URLSearchParams(location.search).get('nonce'),report=v=>fetch('/__test-result/'+nonce,{method:'POST',body:JSON.stringify(v)}),sleep=ms=>new Promise(r=>setTimeout(r,ms)),check=(v,m)=>{if(!v)throw Error(m);},wait=async fn=>{for(let i=0;i<400;i++){if(fn())return;await sleep(20);}throw Error('expected UI timed out');};
+window.addEventListener('error',e=>report({status:'FAIL',error:String(e.error??e.message)}));window.addEventListener('unhandledrejection',e=>report({status:'FAIL',error:String(e.reason)}));
+const binding={bindingId:crypto.randomUUID(),documentId:crypto.randomUUID(),revisionId:crypto.randomUUID()},texts=new Map(),calls=[],reads=[],plans=new Map();let prefs=defaultContext(),callback=0,state,app,stage='open',failPage=0,missingCoverage=false;
+const reader=createPdfReader(document.querySelector('#container'),document.querySelector('#pages'),s=>state=s),wrapped={getPage:async n=>{reads.push(n);const page=await reader.getPage(n);if(n===failPage)return{getTextContent:async()=>{throw Error('synthetic extraction failure');}};if(n===30)return{getTextContent:async()=>({items:[]})};return page;},addText:v=>reader.addText(v),annotation:m=>reader.annotation(m)};
+window.__TAURI_INTERNALS__={transformCallback:()=>++callback,unregisterCallback(){},invoke:async(cmd,args)=>{
+ calls.push({cmd,args});
+ if(cmd==='m6_preferences')return{context:prefs,inputs:defaultInputs(),styles:{schemaVersion:1,selected:null,revisions:[]}};
+ if(cmd==='m5_config')return{config:{schemaVersion:1,main:{provider:'mock',model:'mock',vision:true},auxiliary:null},realProviderEnabled:false};
+ if(cmd==='m5_chat_view')return{sessionId:null,leafId:null,sessions:[],path:[],versions:[]};
+ if(cmd==='m4_delete_message'||cmd==='m5_cancel')return;
+ if(cmd==='m5_index'){for(const page of args.pages)texts.set(page.page,page.text);return;}
+ if(cmd==='m5_prepare'){
+  if(args.input.requireComplete)check(texts.size===30,'prepare occurred before complete indexing');
+  const sources=args.input.currentPdf?[22,27].map((page,i)=>({id:'S'+(i+1),grantId:'synthetic',name:'Thirty.pdf',page,text:texts.get(page),image:false,reasons:['retrieved']})):[{id:'S1',grantId:'synthetic',name:'Thirty.pdf',page:1,text:texts.get(1),image:false,reasons:['current']}];
+  const plan={id:crypto.randomUUID(),sources,textBytes:100,historyMessages:0,coverage:{totalPages:30,indexedPages:texts.size,imageOnlyPages:[...texts.values()].filter(t=>!t.trim()).length,completeRequired:args.input.requireComplete}};if(missingCoverage)delete plan.coverage;plans.set(plan.id,plan);return plan;
+ }
+ if(cmd==='m5_images')return;
+ if(cmd==='m5_start'){const requestId=crypto.randomUUID(),answerId=crypto.randomUUID(),userId=crypto.randomUUID();setTimeout(()=>{for(const [kind,text] of [['started',''],['delta','远页定义支持本页结论 [S1][S2]'],['complete','']])args.onEvent.onmessage({kind,text,requestId,answerId,userId,bindingId:binding.bindingId});},20);return requestId;}
+ throw Error('isolated test forbids '+cmd);
+}};
+async function reset(){if(app)await unmount(app);texts.clear();reads.length=0;app=mount(InlineExplanation,{target:document.querySelector('#app'),props:{reader:wrapped,binding,container:document.querySelector('#container'),token:1,totalPages:30,source:null,box:{page:1,rect:[80,200,340,400]},quick:false,changed(){},close(){},place(){},busyChanged(){}}});await tick();await sleep(20);}
+async function send(){const input=document.querySelector('[aria-label="原位解释 Prompt"]');input.value='basis';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();document.querySelector('[aria-label="发送原位问题"]').click();}
+try{
+ const bytes=readingFixture(30,false,{22:'basis definition supports a vector',27:'basis transformation uses this definition'});await reader.open({name:'Thirty.pdf',size:bytes.length,read:async()=>bytes.slice()});await wait(()=>state?.viewReady);
+ stage='complete document';await reset();await send();await wait(()=>document.querySelector('[aria-label="回答输出区域"]')?.textContent.includes('远页定义'));check(texts.size===30&&reads.includes(22)&&reads.includes(27),'distant pages absent');const prepared=calls.filter(c=>c.cmd==='m5_prepare').at(-1);check(prepared.args.input.requireComplete&&prepared.args.input.currentPdf,'complete requirement not wired');check(document.querySelector('.coverage-note').textContent.includes('30/30'),'coverage not visible');check(document.querySelector('.coverage-note').textContent.includes('1 页无可检索文字'),'image-only omission not disclosed');
+ stage='failure blocks generation';failPage=23;await reset();const before=calls.filter(c=>c.cmd==='m5_prepare').length;await send();await wait(()=>document.querySelector('#app .error'));check(calls.filter(c=>c.cmd==='m5_prepare').length===before,'partial index proceeded to prepare');
+ stage='coverage proof required';failPage=0;missingCoverage=true;await reset();const started=calls.filter(c=>c.cmd==='m5_start').length;await send();await wait(()=>document.querySelector('#app .error'));check(calls.filter(c=>c.cmd==='m5_start').length===started,'missing coverage still generated');
+ stage='setting off';missingCoverage=false;prefs={...prefs,inlineFullDocument:false};await reset();await send();await wait(()=>document.querySelector('[aria-label="回答输出区域"]')?.textContent.includes('远页定义'));check(reads.every(n=>n===1),'disabled setting still read distant pages');const disabled=calls.filter(c=>c.cmd==='m5_prepare').at(-1);check(!disabled.args.input.requireComplete&&!disabled.args.input.currentPdf,'disabled search still requested full context');
+ await unmount(app);app=null;await reader.dispose();await report({status:'PASS',realPdfPages:30,distantPages:[22,27],fullIndexBeforePrepare:true,incompleteStopsBeforePrepare:true,coverageProofRequired:true,imageOnlyWarning:true,settingOffRestrictsReads:true,providerCalls:0,scope:'production inline component and PDF extraction; fake IPC, real backend planner covered separately'});
+}catch(e){if(app)await unmount(app).catch(()=>{});await reader.dispose().catch(()=>{});await report({status:'FAIL',stage,error:String(e),ui:document.querySelector('#app').textContent.slice(-500),reads});}
+</script>

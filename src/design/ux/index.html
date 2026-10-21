@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>M2-UX · 两个阅读器布局方案</title>
+    <link rel="stylesheet" href="./prototype.css" />
+  </head>
+  <body class="comparison">
+    <main class="comparison-content">
+      <p class="eyebrow">AI-NATIVE PDF READER / M2-UX</p>
+      <h1>让阅读回到中心</h1>
+      <p class="intro">相同的轻量视觉风格，两种不同的操作布局。颜色、字体和动画仍可调整。</p>
+      <div class="option-grid">
+        <a class="option-card" href="./a.html">
+          <div class="mini-layout mini-a" aria-hidden="true">
+            <div class="mini-tabs"><i></i><i></i></div>
+            <div class="mini-toolbar"><i></i><i></i><i></i></div>
+            <div class="mini-canvas"><div class="mini-paper"><b></b><i></i><i></i><i></i><em></em><i></i></div></div>
+          </div>
+          <div class="card-copy"><p class="eyebrow">方案 A <span class="recommendation">推荐</span></p><h2>经典横栏</h2><p>标签在上，常用阅读操作集中在一条横栏；左右侧栏按需展开。</p><div class="tradeoff"><strong>易发现，操作集中</strong><span>需要约束横栏，避免工具再次堆满。</span></div><span class="preview-link">预览方案 A →</span></div>
+        </a>
+        <a class="option-card" href="./b.html">
+          <div class="mini-layout mini-b" aria-hidden="true">
+            <div class="mini-tabs"><i></i><i></i></div>
+            <div class="mini-rail"><i></i><i></i><i></i></div>
+            <div class="mini-canvas"><div class="mini-paper"><b></b><i></i><i></i><i></i><em></em><i></i></div></div>
+            <div class="mini-dock"><i></i><i></i><i></i></div>
+          </div>
+          <div class="card-copy"><p class="eyebrow">方案 B</p><h2>侧轨阅读</h2><p>顶部只留标签，工具在左侧，页码和缩放集中在底部阅读条。</p><div class="tradeoff"><strong>顶部更安静，阅读起点更高</strong><span>操作分散，新用户需要适应工具位置。</span></div><span class="preview-link">预览方案 B →</span></div>
+        </a>
+      </div>
+      <div class="preview-guide"><h3>可以体验什么</h3><p>侧栏折叠、搜索展开、标签切换、页码跳转和缩放布局。批注、框选、AI 与原位解释仅有交互示意，不读写 PDF，不调用模型。</p><p>现有界面的重复页码、缩放、关闭入口已在两个方案中合并。测试样例按钮、阶段提示与长篇帮助不进入常驻阅读区。</p></div>
+      <details class="reference-notes"><summary>设计参考与共同原则</summary><p>参考 Edge 的工具栏与目录入口、Acrobat 的快捷工具和可收起侧栏、Firefox 的缩略图与集中页码/缩放。以下是结构参考，不是本产品兼容性验证。</p><p><a href="https://explore.microsoft.com/en-us/edge/features/pdf-reader?form=MT0160" target="_blank" rel="noopener noreferrer">Microsoft Edge</a> · <a href="https://helpx.adobe.com/acrobat/desktop/get-started/preferences-and-settings/customize-toolbar.html" target="_blank" rel="noopener noreferrer">Acrobat 快捷工具</a> · <a href="https://helpx.adobe.com/acrobat/desktop/get-started/preferences-and-settings/customize-side-panels.html" target="_blank" rel="noopener noreferrer">Acrobat 侧栏</a> · <a href="https://support.mozilla.org/en-US/kb/view-pdf-files-firefox-or-choose-another-viewer" target="_blank" rel="noopener noreferrer">Firefox 阅读器</a></p><ul><li>页面滚动、侧栏滚动各自独立；不劫持滚轮，不依赖方向手势。</li><li>图标有名称、提示和键盘焦点；页码与缩放只保留一个主要入口。</li><li>窄窗侧栏改为可关闭抽屉；桌面宽窗左右可以同时展开，关闭后完整归还阅读宽度。</li><li>选中文字或框选区域后才出现提问/解释入口；原位解释的取消、确认与 PDF 保存是不同操作。</li><li>当前 PDF 上下文默认开启，同目录默认关闭；模型与 Default 风格放在 AI 栏内。</li><li>批注工具按模式展开；未来未保存状态放在文档标签，显式保存放在菜单及快捷键，能力未就绪时不放假按钮。</li><li>正式重构只调整界面，保留既有 PDF 渲染、搜索、标签隔离、位置恢复和资源释放逻辑。</li></ul></details>
+      <a class="existing-link" href="/">返回现有阅读器</a>
+    </main>
+  </body>
+</html>

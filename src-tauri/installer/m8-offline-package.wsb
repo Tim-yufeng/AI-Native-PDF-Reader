@@ -1,0 +1,33 @@
+<Configuration>
+  <!-- Offline WebView2 validation run (2026-10-15, plan B).
+       Hardening is unchanged from m8-mupdf-package.wsb: no network, no clipboard,
+       no printer/audio/video redirection, protected client, 4 GiB.
+       The package mapping stays read-only. The single added mapping is the
+       dedicated results folder, which the guest must be able to write so the
+       evidence can leave the disposable guest; it contains no input of any kind.
+       The logon command runs the guest test script from the read-only mapping and
+       the guest shuts itself down when the script finishes. -->
+  <vGPU>Disable</vGPU>
+  <Networking>Disable</Networking>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ProtectedClient>Enable</ProtectedClient>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <MemoryInMB>4096</MemoryInMB>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\Projects\ai-native-pdf-reader\.cache\m8-offline-package</HostFolder>
+      <SandboxFolder>C:\M8ReadOnly\Package</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\Projects\ai-native-pdf-reader\.cache\m8-offline-results</HostFolder>
+      <SandboxFolder>C:\M8Results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>cmd.exe /c C:\M8ReadOnly\Package\guest-verify.cmd</Command>
+  </LogonCommand>
+</Configuration>

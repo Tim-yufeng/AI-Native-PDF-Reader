@@ -1,0 +1,29 @@
+<!doctype html><meta charset="utf-8"><div id="app"></div>
+<script type="module">
+import '/src/app.css';import {mount,unmount} from 'svelte';import ModelSettings from '/src/components/ModelSettings.svelte';import LocalHistory from '/src/components/LocalHistory.svelte';import {LocalData} from '/src/lib/local-data.ts';
+let app,stage='model settings',writes=0,tests=0,keys=0,historyReads=0,failTest=false;
+let config={schemaVersion:1,main:{provider:'compatible',endpoint:'https://example.invalid/v1/chat/completions',model:'synthetic-model',vision:false},auxiliary:null};
+window.__TAURI_INTERNALS__={invoke:async(cmd,args)=>{
+ if(cmd==='m5_config')return {config:structuredClone(config),mainKeyPresent:true,auxiliaryKeyPresent:false,realProviderEnabled:true};
+ if(cmd==='m5_set_config'){writes++;config=structuredClone(args.config);return;}
+ if(cmd==='m5_store_key'){if(args.key!=='isolated-fake-input')throw Error('only synthetic key permitted');keys++;return;}
+ if(cmd==='m5_test_connection'){tests++;if(failTest)throw {code:'authentication'};return {connected:true,vision:true,mock:false};}
+ if(cmd==='m4_messages'){historyReads++;return [];}
+ throw Error('isolated settings bridge refuses '+cmd);
+}};
+const q=s=>document.querySelector(s),click=t=>[...document.querySelectorAll('button')].find(b=>b.textContent===t).click(),sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const wait=async fn=>{for(let i=0;i<100;i++){if(fn())return;await sleep(10);}throw Error('UI timeout');},check=(v,m)=>{if(!v)throw Error(m);},input=(el,value)=>{el.value=value;el.dispatchEvent(new Event('input',{bubbles:true}));};
+const report=value=>fetch('/__test-result/'+new URLSearchParams(location.search).get('nonce'),{method:'POST',body:JSON.stringify(value)});
+try{
+ app=mount(ModelSettings,{target:q('#app'),props:{close:()=>{},changed:()=>{}}});await wait(()=>q('input[type=password]'));
+ input(q('input[type=password]'),'isolated-fake-input');click('测试连接');await wait(()=>q('[role=alert]'));
+ check(q('input[type=password]').value==='isolated-fake-input'&&writes===0&&keys===0&&tests===0,'test changed or dropped unsaved input');
+ click('保存配置');await wait(()=>writes===1&&keys===1&&!q('fieldset').disabled);check(q('input[type=password]').value==='','save retained secret in input');
+ click('测试连接');await wait(()=>tests===1&&!q('fieldset').disabled&&q('.models > p[role=status]')?.textContent.includes('目录连接正常'));check(writes===1&&!config.main.vision,'test changed saved configuration or capability');
+ failTest=true;click('测试连接');await wait(()=>tests===2&&!q('fieldset').disabled&&q('[role=alert]')?.textContent.includes('鉴权失败'));check(writes===1&&keys===1,'failed test altered configuration');
+ await unmount(app);stage='formal data panel';
+ app=mount(LocalHistory,{target:q('#app'),props:{data:new LocalData(),binding:{bindingId:crypto.randomUUID(),documentId:crypto.randomUUID(),revisionId:crypto.randomUUID()},status:{available:true,path:'synthetic',areas:[],acl:'test',generation:1},settings:null,page:1,changeQuota:async()=>{},prepareDataChange:async()=>{},close:()=>{},migrated:()=>{},restored:()=>{},jumpPage:()=>{}}});await sleep(40);
+ check(!q('.history-entry')&&!q('.history-records')&&historyReads===0,'formal panel exposed test history');check(q('.history-maintenance[open]'),'data management not discoverable');
+ await unmount(app);await report({status:'PASS',unsavedInputRetained:true,testDoesNotPersist:true,failedTestPreservesConfig:true,formalHistoryTestControls:false,writes,tests,keys,providerCalls:0});
+}catch(e){if(app)await unmount(app).catch(()=>{});await report({status:'FAIL',stage,error:String(e),writes,tests,keys,providerCalls:0});}
+</script>

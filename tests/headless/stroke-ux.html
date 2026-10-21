@@ -1,0 +1,105 @@
+<!doctype html><meta charset="utf-8"><title>Isolated native Ink and Highlight controls</title>
+<style>html,body{margin:0;height:100%;}#container{position:absolute;inset:0;overflow:auto;}#result{position:fixed;z-index:100;left:0;bottom:0;max-height:70px;overflow:auto;background:white;font-size:10px;margin:0;}</style>
+<div id="container"><div id="pages" class="pdfViewer"></div></div><pre id="result">RUNNING</pre>
+<script type="module">
+// Project-generated PDF and annotation records only. No Tauri bridge, external
+// Provider, credentials, desktop input, file save or user document is involved.
+import 'pdfjs-dist/web/pdf_viewer.css';
+import '/src/app.css';
+import '/src/lib/freetext-control.css';
+import {mount,unmount} from 'svelte';
+import StrokeEditorBar from '/src/components/StrokeEditorBar.svelte';
+import {createPdfReader} from '/src/lib/pdf-reader.ts';
+import {emptyDraft,validateDraft} from '/src/lib/annotation-draft.ts';
+import {editorFixture} from '/tests/frontend/editor-fixture.ts';
+
+const container=document.querySelector('#container'),pages=document.querySelector('#pages'),result=document.querySelector('#result');
+let state,stage='initialization',finished=false,component=null,host=null;
+const reader=createPdfReader(container,pages,next=>state=next),cases=[];
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const frames=async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);};
+const check=(value,message)=>{if(!value)throw Error(`${stage}: ${message}`);};
+const near=(a,b,tolerance,message)=>check(Number.isFinite(a)&&Math.abs(a-b)<=tolerance,`${message}: ${a} vs ${b}`);
+const wait=async(predicate,message)=>{for(let i=0;i<200;i++){if(predicate())return;await sleep(25);}throw Error(`${stage}: ${message}`);};
+const rgb=value=>value?.startsWith('#')?[1,3,5].map(i=>parseInt(value.slice(i,i+2),16)):value?.match(/[\d.]+/g)?.slice(0,3).map(Number);
+const sameColor=(actual,hex,label)=>{const a=rgb(actual),b=rgb(hex);check(a?.length===3&&a.every((v,i)=>Math.abs(v-b[i])<=1),`${label}: ${actual} vs ${hex}`);};
+const source=()=>{const bytes=editorFixture('Synthetic native stroke controls');return{name:'Synthetic stroke controls.pdf',size:bytes.length,read:async signal=>{signal.throwIfAborted();return bytes.slice();}};};
+const entry=()=>{const draft=reader.draft();check(draft.entries.length===1,'one precise synthetic annotation must remain');return draft.entries[0];};
+const pageNode=()=>pages.querySelector('.page[data-page-number="1"]');
+const editorNode=()=>state?.selectedStroke?.id?document.getElementById(state.selectedStroke.id):null;
+const definitions=[
+ {name:'ink',kind:'ink',canThicken:true,initial:'#19334d',changed:'#be294b',thickness:2,nextThickness:6,
+  record:{annotationType:15,pageIndex:0,rect:[75,615,175,675],rotation:0,color:[25,51,77],thickness:2,opacity:1,
+   paths:{lines:[[null,null,null,null,80,650,110,670,140,620,170,640]],points:[[80,650,170,640]]}}},
+ {name:'text-highlight',kind:'highlight',canThicken:false,initial:'#ffff00',changed:'#46b9d2',thickness:12,
+  record:{annotationType:9,pageIndex:0,rect:[80,570,190,590],rotation:0,color:[255,255,0],thickness:12,opacity:.4,
+   quadPoints:[80,590,190,590,80,570,190,570]}},
+ {name:'free-highlight',kind:'highlight',canThicken:true,initial:'#ffff00',changed:'#52b56f',thickness:12,nextThickness:18,
+  record:{annotationType:9,pageIndex:0,rect:[74,493,186,518],rotation:0,color:[255,255,0],thickness:12,opacity:.4,
+   outlines:{points:[[80,500,105,510,130,500,155,512,180,505]]}}}
+];
+async function disposeToolbar(){if(component)await unmount(component);component=null;host?.remove();host=null;}
+async function openRecord(record){
+ await disposeToolbar();const draft=validateDraft({...emptyDraft(),entries:[structuredClone(record)]});
+ await reader.open(source(),undefined,draft);await wait(()=>state?.viewReady&&state.editingAllowed,'reader/permissions did not become ready');
+ await wait(()=>pageNode()?.querySelector(record.annotationType===15?'.inkEditor':'.highlightEditor'),'normal stroke draft was not restored into PDF.js');
+ check(entry().annotationType===record.annotationType,'restored annotation changed type');
+}
+async function select(definition){
+ await reader.annotation(definition.kind);await wait(()=>state.annotationMode===definition.kind,'native mode did not finish');
+ const editor=pageNode().querySelector(definition.kind==='ink'?'.inkEditor':'.highlightEditor');check(editor,'native editor DOM missing');
+ const bounds=editor.getBoundingClientRect();check(bounds.width>0&&bounds.height>0,'native editor is hidden');
+ const pointer={bubbles:true,cancelable:true,button:0,pointerId:73,pointerType:'mouse',isPrimary:true,clientX:bounds.left+bounds.width/2,clientY:bounds.top+bounds.height/2};
+ editor.dispatchEvent(new PointerEvent('pointerdown',pointer));editor.dispatchEvent(new PointerEvent('pointerup',pointer));editor.focus({preventScroll:true});
+ await wait(()=>state?.selectedStroke?.id===editor.id,'native pointer/focus did not select the expected stroke');await frames();
+ check(state.selectedStroke.kind===definition.kind,'selectedStroke classified the wrong editor');check(state.selectedStroke.canThicken===definition.canThicken,'selectedStroke thickness capability is wrong');
+ check(typeof state.selectedStroke.color==='string'&&/^#[0-9a-f]{6}$/i.test(state.selectedStroke.color),'native color property is not a usable color-input value');
+ check(typeof state.selectedStroke.thickness==='number'&&Number.isFinite(state.selectedStroke.thickness),'native thickness property is not numeric');
+}
+function visibleDraw(definition,hex){
+ const property=definition.kind==='ink'?'stroke':'fill';
+ const svg=[...pageNode().querySelectorAll('svg')].find(node=>node.getAttribute(property)&&rgb(node.getAttribute(property))?.every((v,i)=>v===rgb(hex)[i])&&node.querySelector('use'));
+ check(svg,'visible native SVG with the actual requested color is missing');const use=svg.querySelector('use'),style=getComputedStyle(use),r=svg.getBoundingClientRect();
+ check(r.width>0&&r.height>0&&getComputedStyle(svg).visibility!=='hidden'&&getComputedStyle(svg).display!=='none','native drawing SVG is hidden');
+ sameColor(style[property],hex,'visible SVG style');const href=use.getAttribute('href');check(href?.startsWith('#'),'SVG drawing has no actual path reference');
+ const path=svg.querySelector(href);check(path&&path.getAttribute('d')?.length>5,'native drawing path is empty');
+ return {svg,path: path.getAttribute('d'),width:parseFloat(style.strokeWidth),bbox:[r.width,r.height]};
+}
+function verify(definition,color,thickness){
+ const saved=entry();sameColor(`#${saved.color.map(v=>v.toString(16).padStart(2,'0')).join('')}`,color,'serialized color');
+ near(saved.thickness,thickness,.001,'serialized thickness');sameColor(state.selectedStroke.color,color,'selectedStroke color');near(state.selectedStroke.thickness,thickness,.001,'selectedStroke thickness');
+ return visibleDraw(definition,color);
+}
+async function toolbar(definition){
+ host=document.createElement('div');document.body.append(host);component=mount(StrokeEditorBar,{target:host,props:{reader,container,selected:structuredClone(state.selectedStroke)}});await frames();
+ const bar=host.querySelector('[aria-label="选中笔画或高亮工具"]'),picker=host.querySelector('[aria-label="笔画或高亮颜色"]'),thickness=host.querySelector('[aria-label="笔画或高亮粗细"]');
+ check(bar&&picker,'actual compact StrokeEditorBar did not mount');check(!!thickness===definition.canThicken,'actual toolbar exposed the wrong thickness control');
+ check(picker.value.toLowerCase()===state.selectedStroke.color.toLowerCase(),'color input did not receive the native selected color');
+ const r=picker.getBoundingClientRect(),clip=container.getBoundingClientRect();check(r.left>=clip.left&&r.right<=clip.right&&r.top>=clip.top&&r.bottom<=clip.bottom,'compact toolbar escaped the reader');
+ const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);check(hit===picker||picker.contains(hit),'the actual color control is covered by another layer');
+ const owner=state.selectedStroke.id;picker.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0,pointerId:74,pointerType:'mouse',isPrimary:true}));picker.focus();await frames();check(state.selectedStroke?.id===owner,'toolbar focus/pointer changed the native selection');
+ picker.value=definition.changed;picker.dispatchEvent(new Event('input',{bubbles:true}));await frames();
+ return thickness;
+}
+async function report(value){if(finished)return;finished=true;result.textContent=JSON.stringify(value);await fetch(`/__test-result/${new URL(location.href).searchParams.get('nonce')}`,{method:'POST',body:JSON.stringify(value)});}
+try{
+ for(const definition of definitions){
+  stage=`${definition.name}: synthetic restoration`;await openRecord(definition.record);await select(definition);const baseline=verify(definition,definition.initial,definition.thickness);
+  stage=`${definition.name}: actual toolbar color binding`;const thickness=await toolbar(definition);verify(definition,definition.changed,definition.thickness);
+  reader.edit('undo');await frames();verify(definition,definition.initial,definition.thickness);reader.edit('redo');await frames();verify(definition,definition.changed,definition.thickness);
+  let thickened=false;
+  if(definition.canThicken){
+   stage=`${definition.name}: actual toolbar thickness binding`;thickness.focus();thickness.value=String(definition.nextThickness);thickness.dispatchEvent(new Event('input',{bubbles:true}));await frames();const changed=verify(definition,definition.changed,definition.nextThickness);
+   if(definition.kind==='ink')near(changed.width/baseline.width,definition.nextThickness/definition.thickness,.02,'actual SVG stroke-width ratio');else check(changed.path!==baseline.path||changed.bbox.some((n,i)=>Math.abs(n-baseline.bbox[i])>.1),'free-highlight thickness did not change actual SVG geometry');
+   reader.edit('undo');await frames();verify(definition,definition.changed,definition.thickness);reader.edit('redo');await frames();verify(definition,definition.changed,definition.nextThickness);thickened=true;
+  }else{
+   const before=JSON.stringify(entry());let refused=false;try{reader.strokeStyle('highlight',undefined,18);}catch{refused=true;}check(refused,'text highlight incorrectly allowed freehand thickness');check(JSON.stringify(entry())===before,'rejected thickness modified the text highlight');
+  }
+  const saved=entry(),expectedThickness=definition.nextThickness??definition.thickness;stage=`${definition.name}: document close and restored style`;await reader.close();await openRecord(saved);await select(definition);verify(definition,definition.changed,expectedThickness);
+  cases.push({kind:definition.name,svgColor:true,serializedColor:true,properties:true,toolbarBindings:true,hitTest:true,colorUndoRedo:true,thicknessUndoRedo:thickened,textThicknessRefused:!definition.canThicken,coldRestore:true});
+ }
+ await disposeToolbar();await reader.dispose();await report({status:'PASS',cases,providerCalls:0});
+}catch(error){
+ const diagnostic={stage,reader:state?.status,mode:state?.annotationMode,selection:state?.selectedStroke,editor:editorNode()?.outerHTML?.slice(0,240),svgCount:pageNode()?.querySelectorAll('svg').length};await disposeToolbar().catch(()=>{});await reader.dispose().catch(()=>{});await report({status:'FAIL',error:String(error),diagnostic});
+}
+</script>

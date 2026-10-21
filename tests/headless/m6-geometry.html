@@ -1,0 +1,280 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>M6 isolated rendered editor geometry</title>
+<style>
+  html,body{margin:0;height:100%;}#container{position:absolute;inset:0;overflow:auto;}
+  #result{position:fixed;z-index:100;left:0;bottom:0;max-height:80px;overflow:auto;background:white;font-size:10px;margin:0;}
+</style>
+<div id="container"><div id="pages" class="pdfViewer"></div></div>
+<pre id="result">RUNNING</pre>
+<script type="module">
+// This page runs only in an isolated headless profile. It does not instantiate
+// Tauri, credentials, a Provider, a data directory or any PDF save endpoint.
+import 'pdfjs-dist/web/pdf_viewer.css';
+import '/src/app.css';
+import '/src/lib/freetext-control.css';
+import {mount,unmount} from 'svelte';
+import InlineHarness from './InlineHarness.svelte';
+import TextEditorBar from '/src/components/TextEditorBar.svelte';
+import {createPdfReader} from '/src/lib/pdf-reader.ts';
+import {editorFixture,editorFixturePages} from '/tests/frontend/editor-fixture.ts';
+
+const container=document.querySelector('#container'),pages=document.querySelector('#pages');
+const result=document.querySelector('#result'),cases=[],edits=[],temporaryCases=[];
+let state,stage='initialization',finished=false;
+let harness=null,harnessHost=null,mockCalls=0,toolbarBindings=false;
+const initialReply='中文 α ≤ β；保留 γ ≥ 0 的必要条件，长句应在框内换行，不得溢出。\nA + B = 10，数学符号与中文保持一致。';
+// The only injected command is a local fixed Mock response. This page never
+// connects to a Tauri process, credentials, a model list or an AI Provider.
+window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
+  if(command!=='m6_mock_explain')throw Error(`Isolated harness refuses command ${command}`);
+  if(args?.input?.bindingId!=='00000000-0000-4000-8000-000000000001'||!args.input.source||typeof args.input.png!=='string'||!args.input.png.startsWith('data:image/png;base64,'))throw Error('Synthetic Mock input was not a local page region');
+  mockCalls++;return {text:initialReply,presetVersion:null};
+}};
+const reader=createPdfReader(container,pages,next=>state=next);
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const frames=async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);};
+const check=(value,message)=>{if(!value)throw Error(`${stage}: ${message}`);};
+const near=(actual,expected,tolerance,message)=>check(Math.abs(actual-expected)<=tolerance,`${message}: actual=${actual}, expected=${expected}, tolerance=${tolerance}`);
+const rectNear=(actual,expected,tolerance,message)=>{check(actual?.length===4,`${message}: rectangle missing`);actual.forEach((n,i)=>near(n,expected[i],tolerance,`${message}[${i}]`));};
+const wait=async(predicate,message)=>{for(let index=0;index<200;index++){if(predicate())return;await sleep(25);}throw Error(`${stage}: ${message}`);};
+const source=bytes=>({name:'Synthetic editor geometry.pdf',size:bytes.length,read:async signal=>{signal.throwIfAborted();return bytes.slice();}});
+const pageNode=page=>pages.querySelector(`.page[data-page-number="${page}"]`);
+const selected=()=>state?.selectedText;
+const selectedEditor=()=>selected()?.id?document.getElementById(selected().id):pages.querySelector('.freeTextEditor.selectedEditor');
+const currentEntry=page=>reader.draft().entries.find(entry=>entry.pageIndex===page-1&&entry.annotationType===3);
+
+// Independent oracle: project the PDF rectangle through PDFPageProxy's public
+// viewport, then use the actual visible canvas CSS bounds. DPR is deliberately
+// not multiplied into screen geometry; it affects canvas backing pixels only.
+async function projected(pageNumber,rect){
+  const page=await reader.getPage(pageNumber),viewport=page.getViewport({scale:1});
+  const canvas=pageNode(pageNumber)?.querySelector('.canvasWrapper');
+  check(canvas,'canvas wrapper missing');const bounds=canvas.getBoundingClientRect();
+  const r=[...viewport.convertToViewportPoint(rect[0],rect[1]),...viewport.convertToViewportPoint(rect[2],rect[3])],sx=bounds.width/viewport.width,sy=bounds.height/viewport.height;
+  return {left:bounds.left+Math.min(r[0],r[2])*sx,top:bounds.top+Math.min(r[1],r[3])*sy,
+    right:bounds.left+Math.max(r[0],r[2])*sx,bottom:bounds.top+Math.max(r[1],r[3])*sy};
+}
+function glyphRects(internal){
+  const walker=document.createTreeWalker(internal,NodeFilter.SHOW_TEXT),rects=[];
+  for(let node=walker.nextNode();node;node=walker.nextNode()){
+    if(!node.textContent.trim())continue;const range=document.createRange();range.selectNodeContents(node);
+    rects.push(...[...range.getClientRects()].filter(r=>r.width>0&&r.height>0));range.detach();
+  }
+  return rects;
+}
+function writeEditable(body,text){body.replaceChildren(...text.split('\n').map(line=>{const node=document.createElement('div');node.textContent=line;return node;}));body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}
+function rgb(value){const numbers=value.match(/[\d.]+/g)?.map(Number);return numbers?.length>=3?numbers:null;}
+function luminance(value){return value.slice(0,3).map(n=>{const s=n/255;return s<=.04045?s/12.92:((s+.055)/1.055)**2.4;}).reduce((n,x,i)=>n+x*[.2126,.7152,.0722][i],0);}
+function contrast(a,b){const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);}
+async function pageBackground(pageNumber,rect){
+  const expected=await projected(pageNumber,rect),canvas=pageNode(pageNumber).querySelector('.canvasWrapper canvas');check(canvas,'rendered PDF canvas missing');
+  const bounds=canvas.getBoundingClientRect(),x=Math.floor(((expected.left+expected.right)/2-bounds.left)*canvas.width/bounds.width),y=Math.floor(((expected.top+expected.bottom)/2-bounds.top)*canvas.height/bounds.height);
+  check(x>=0&&y>=0&&x<canvas.width&&y<canvas.height,'background sample escaped the rendered page');
+  return [...canvas.getContext('2d').getImageData(x,y,1,1).data];
+}
+async function painted(pageNumber,rect,dark){
+  for(let index=0;index<120;index++){const color=await pageBackground(pageNumber,rect);if(color[3]===255&&(dark?Math.max(...color.slice(0,3))<40:Math.min(...color.slice(0,3))>240))return;await sleep(25);}
+  throw Error(`${stage}: synthetic page canvas did not paint the expected background`);
+}
+
+async function geometry(pageNumber,rect,{handles=true,fontSize=12,color='#000000'}={}){
+  await frames();const editor=selectedEditor();check(editor?.classList.contains('freeTextEditor'),'selected normal FreeText editor missing');
+  const expected=await projected(pageNumber,rect),bounds=editor.getBoundingClientRect();
+  // Native FreeText serialization shifts the PDF rectangle by two PDF units
+  // of padding. Keep that documented allowance plus a one-CSS-pixel border,
+  // while rejecting large offsets, swapped dimensions and auto-shrunk boxes.
+  // The normal editor intentionally offsets its content origin by its scaled
+  // 2-PDF-unit padding and a constant 2-CSS-pixel selection outline. Predict
+  // that contract independently; do not loosen a tolerance to hide a mismatch.
+  const inset=2*state.scale*4/3+2;
+  for(const edge of ['left','top','right','bottom'])near(bounds[edge],expected[edge]-inset,2,`editor ${edge}`);
+  check(bounds.width>40&&bounds.height>30,'editor is empty/hidden or auto-shrunk');
+  const internal=editor.querySelector('.internal');check(internal,'editable text body missing');
+  const glyphs=glyphRects(internal);check(glyphs.length>=2,'multiline Unicode text not rendered as lines');
+  for(const [index,r] of glyphs.entries()){
+    check(r.left>=bounds.left-1&&r.top>=bounds.top-1&&r.right<=bounds.right+1&&r.bottom<=bounds.bottom+1,`text line ${index} lies outside the actual selected box`);
+  }
+  const style=getComputedStyle(internal),actualColor=rgb(style.color),expectedColor=rgb(`rgb(${parseInt(color.slice(1,3),16)},${parseInt(color.slice(3,5),16)},${parseInt(color.slice(5,7),16)})`);
+  check(actualColor&&expectedColor,'text color did not resolve');actualColor.slice(0,3).forEach((n,i)=>near(n,expectedColor[i],1,`text color channel${i}`));
+  near(parseFloat(style.fontSize),fontSize*state.scale*4/3,.35,'rendered CSS font size');
+  // Confirmed native FreeText keeps an honest serialized text color; it does
+  // not pretend that a temporary HTML paper background will exist in the PDF.
+  const paper=await pageBackground(pageNumber,rect);check(paper[3]===255,'PDF background sample is not opaque');
+  check(contrast(actualColor,paper)>=4.5,'FreeText color/background contrast is below 4.5');
+  if(handles){
+    const nodes=[...editor.querySelectorAll('.reader-freetext-handles [data-handle]')];
+    check(nodes.length===8,'eight owned resizing handles are required');
+    check(new Set(nodes.map(n=>n.dataset.handle)).size===8,'handle identities are not distinct');
+    const targets=[[bounds.left,bounds.top],[(bounds.left+bounds.right)/2,bounds.top],[bounds.right,bounds.top],[bounds.right,(bounds.top+bounds.bottom)/2],[bounds.right,bounds.bottom],[(bounds.left+bounds.right)/2,bounds.bottom],[bounds.left,bounds.bottom],[bounds.left,(bounds.top+bounds.bottom)/2]];
+    const unmatched=[...targets];
+    for(const node of nodes){const h=node.getBoundingClientRect();check(h.width>=23&&h.height>=23&&getComputedStyle(node).display!=='none','handle is hidden');const x=h.left+h.width/2,y=h.top+h.height/2,index=unmatched.findIndex(([tx,ty])=>Math.abs(tx-x)<=3&&Math.abs(ty-y)<=3);check(index>=0,`handle ${node.dataset.handle} is detached from the selected box`);unmatched.splice(index,1);const px=x+8,py=y+8;const clip=container.getBoundingClientRect();if(px>clip.left&&py>clip.top&&px<clip.left+container.clientWidth&&py<clip.top+container.clientHeight){const hit=document.elementFromPoint(px,py);check(hit===node||node.contains(hit),'handle outer hit area was covered '+node.dataset.handle+' by '+hit?.tagName+'.'+hit?.className+'#'+hit?.id+' '+hit?.outerHTML?.slice(0,240));}}
+  }
+  const entry=currentEntry(pageNumber);check(entry,'normal FreeText draft missing');rectNear(entry.rect,rect,.5,'serialized PDF Rect');
+  near(entry.fontSize,fontSize,.01,'draft font size');entry.color.forEach((n,i)=>near(n,expectedColor[i],1,`draft color channel${i}`));
+  return {width:+bounds.width.toFixed(2),height:+bounds.height.toFixed(2),glyphLines:glyphs.length,maxEdgeResidual:+Math.max(...['left','top','right','bottom'].map(edge=>Math.abs(bounds[edge]-(expected[edge]-inset)))).toFixed(2)};
+}
+
+async function selectRestored(pageNumber){
+  await reader.annotation('text');await wait(()=>state.annotationMode==='text','text mode did not activate');
+  const editor=pageNode(pageNumber)?.querySelector('.freeTextEditor');check(editor,'restored editor missing');
+  // Events operate only this isolated test DOM, never a real desktop window.
+  const r=editor.getBoundingClientRect(),input={bubbles:true,cancelable:true,button:0,pointerId:17,clientX:r.left+r.width/2,clientY:r.top+r.height/2};
+  editor.dispatchEvent(new PointerEvent('pointerdown',input));editor.dispatchEvent(new PointerEvent('pointerup',input));editor.focus();
+  await wait(()=>selected()?.page===pageNumber,'restored editor did not become selectable');
+}
+async function dragFormalHandle(pageNumber,rect,color){
+  await frames();const editor=selectedEditor(),bounds=editor.getBoundingClientRect();
+  const handles=[...editor.querySelectorAll('.reader-freetext-handles [data-handle]')];
+  check(handles.length===8&&handles.every(node=>!node.disabled),'new native FreeText resizing handles must all be enabled');
+  // Select the *screen* bottom-right grip. Its editor-local label can differ
+  // after rotation; the expected PDF delta is independently inverse-projected.
+  const grip=handles.map(node=>{const r=node.getBoundingClientRect();return {node,x:r.left+r.width/2,y:r.top+r.height/2};})
+    .sort((a,b)=>Math.hypot(a.x-bounds.right,a.y-bounds.bottom)-Math.hypot(b.x-bounds.right,b.y-bounds.bottom))[0];
+  const dx=14,dy=12,input={bubbles:true,cancelable:true,button:0,pointerId:41,pointerType:'mouse',isPrimary:true,clientX:grip.x,clientY:grip.y};
+  const original=await projected(pageNumber,rect),page=await reader.getPage(pageNumber),v=page.getViewport({scale:1}),canvas=pageNode(pageNumber).querySelector('.canvasWrapper').getBoundingClientRect();
+  const a=v.convertToPdfPoint((original.left-canvas.left)*v.width/canvas.width,(original.top-canvas.top)*v.height/canvas.height),
+    b=v.convertToPdfPoint((original.right+dx-canvas.left)*v.width/canvas.width,(original.bottom+dy-canvas.top)*v.height/canvas.height);
+  const target=[Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.max(a[0],b[0]),Math.max(a[1],b[1])];
+  grip.node.dispatchEvent(new PointerEvent('pointerdown',input));
+  window.dispatchEvent(new PointerEvent('pointermove',{...input,clientX:grip.x+dx,clientY:grip.y+dy}));
+  window.dispatchEvent(new PointerEvent('pointerup',{...input,clientX:grip.x+dx,clientY:grip.y+dy}));
+  await frames();await geometry(pageNumber,target,{color});
+  reader.edit('undo');await frames();await geometry(pageNumber,rect,{color});
+  reader.edit('redo');await frames();await geometry(pageNumber,target,{color});
+  reader.resizeText(rect);await frames();await geometry(pageNumber,rect,{color});
+}
+async function doubleClickEdit(pageNumber,rect,color){
+  const editor=selectedEditor(),body=editor.querySelector('.internal'),r=body.getBoundingClientRect();
+  body.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,button:0,detail:2,clientX:r.left+5,clientY:r.top+5}));
+  await wait(()=>body.isContentEditable,'double-click did not enter normal native contentEditable');
+  reader.draft();await frames();await geometry(pageNumber,rect,{color});
+}
+async function disposeHarness(){if(harness){await unmount(harness);harness=null;}harnessHost?.remove();harnessHost=null;}
+async function newHarness(pageNumber,rect){
+  await disposeHarness();harnessHost=document.createElement('div');document.body.append(harnessHost);
+  let reason=null;const sourceRect=[rect[0]+8,rect[1]+8,rect[0]+88,rect[1]+58];
+  harness=mount(InlineHarness,{target:harnessHost,props:{reader,container,token:state.token,
+    source:{page:pageNumber,rect:sourceRect},initialBox:{page:pageNumber,rect},closed:value=>reason=value}});
+  await wait(()=>harnessHost.querySelector('[aria-label="原位解释 Prompt"]'),'Prompt first missing');const prompt=harnessHost.querySelector('[aria-label="原位解释 Prompt"]');prompt.value='请解释合成公式';prompt.dispatchEvent(new Event('input',{bubbles:true}));await frames();harnessHost.querySelector('[aria-label="发送原位问题"]').click();await wait(()=>harnessHost.querySelector('[aria-label="确认批注"]')?.disabled===false,'temporary local Mock answer did not finish');
+  return ()=>reason;
+}
+async function temporaryGeometry(pageNumber,rect){
+  await frames();const node=harnessHost?.querySelector('.inline-answer'),content=node?.querySelector('.inline-content');check(node&&content,'real temporary explanation component missing');
+  const expected=await projected(pageNumber,rect),bounds=node.getBoundingClientRect();
+  for(const edge of ['left','top','right','bottom'])near(bounds[edge],expected[edge],1,`temporary ${edge}`);
+  near(parseFloat(getComputedStyle(content).fontSize),12*state.scale*4/3,.35,'temporary CSS font size');
+  check(content.textContent===initialReply,'local Mock answer changed unexpectedly');
+  const glyphs=glyphRects(content);check(glyphs.length>=2,'temporary multiline reply was not visibly rendered');
+  for(const [index,r] of glyphs.entries())check(r.left>=bounds.left&&r.top>=bounds.top&&r.right<=bounds.right&&r.bottom<=bounds.bottom,`temporary text line${index} escaped its own answer box`);
+  const tools=node.querySelector('.inline-tools').getBoundingClientRect();
+  check(tools.bottom<=bounds.top||tools.top>=bounds.bottom,'temporary toolbar consumes the PDF answer output rectangle');
+  const textColor=rgb(getComputedStyle(content).color),paper=rgb(getComputedStyle(node).backgroundColor);check(textColor&&paper&&contrast(textColor,paper)>=4.5,'temporary reply lacks a readable independent background');
+  return {width:+bounds.width.toFixed(2),height:+bounds.height.toFixed(2),glyphLines:glyphs.length,maxEdgeError:+Math.max(...['left','top','right','bottom'].map(edge=>Math.abs(bounds[edge]-expected[edge]))).toFixed(2)};
+}
+async function dragTemporary(pageNumber,rect,resize=false){
+  const node=harnessHost.querySelector(resize?'.inline-resize':'.drag-title'),bounds=node.getBoundingClientRect(),dx=resize?16:12,dy=resize?12:9;
+  const startX=bounds.left+bounds.width/2,startY=bounds.top+bounds.height/2,input={bubbles:true,cancelable:true,button:0,pointerId:24,clientX:startX,clientY:startY};
+  node.dispatchEvent(new PointerEvent('pointerdown',input));await frames();
+  window.dispatchEvent(new PointerEvent('pointermove',{...input,clientX:startX+dx,clientY:startY+dy}));
+  window.dispatchEvent(new PointerEvent('pointerup',{...input,clientX:startX+dx,clientY:startY+dy}));await frames();
+  const page=await reader.getPage(pageNumber),v=page.getViewport({scale:1}),canvas=pageNode(pageNumber).querySelector('.canvasWrapper').getBoundingClientRect(),original=await projected(pageNumber,rect);
+  const a=v.convertToPdfPoint((original.left+(resize?0:dx)-canvas.left)*v.width/canvas.width,(original.top+(resize?0:dy)-canvas.top)*v.height/canvas.height);
+  const b=v.convertToPdfPoint((original.right+dx-canvas.left)*v.width/canvas.width,(original.bottom+dy-canvas.top)*v.height/canvas.height);
+  const expected=[Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.max(a[0],b[0]),Math.max(a[1],b[1])];
+  const changed=harness.snapshot().rect;rectNear(changed,expected,.05,`temporary ${resize?'resize':'drag'} callback PDF Rect`);await temporaryGeometry(pageNumber,changed);
+  harness.resetBox({page:pageNumber,rect});await frames();await temporaryGeometry(pageNumber,rect);
+}
+async function temporaryRound(pageNumber,rect,rotation){
+  await reader.annotation('read');reader.goToPage(pageNumber);await frames();
+  const before=reader.draft().entries.length;const cancelled=await newHarness(pageNumber,rect);
+  for(const zoom of [.5,1,2]){
+    stage=`temporary page${pageNumber} rotation${rotation} zoom${zoom} DPR${devicePixelRatio}`;
+    reader.zoom(zoom);await wait(()=>Math.abs(state.scale-zoom)<.001,'temporary PDF zoom did not synchronize');await frames();
+    const metrics=await temporaryGeometry(pageNumber,rect);temporaryCases.push({page:pageNumber,rotation,zoom,...metrics});
+    const details=harnessHost.querySelector('[aria-label="编辑原位问题"]');details.click();await frames();check(!harnessHost.querySelector('.inline-content'),'Prompt and answer displayed together');rectNear(harness.snapshot().rect,rect,0,'edit changed the answer PDF Rect');harnessHost.querySelector('[aria-label="发送原位问题"]').click();await wait(()=>harnessHost.querySelector('[aria-label="确认批注"]')?.disabled===false,'edited prompt did not return answer');await frames();
+    await dragTemporary(pageNumber,rect);await dragTemporary(pageNumber,rect,true);
+  }
+  harnessHost.querySelector('[aria-label="取消原位解释"]').click();await wait(()=>cancelled()==='cancelled','temporary cancellation did not finish');
+  check(reader.draft().entries.length===before,'unconfirmed temporary reply entered the normal annotation draft');await disposeHarness();
+  stage=`component confirmation page${pageNumber}`;const confirmed=await newHarness(pageNumber,rect);
+  await painted(pageNumber,rect,editorFixturePages[pageNumber-1].dark);
+  harnessHost.querySelector('[aria-label="确认批注"]').click();await wait(()=>confirmed()==='confirmed','component confirmation did not create a normal annotation');
+  check(reader.draft().entries.length===before+1,'component confirmation did not add exactly one FreeText');await disposeHarness();
+}
+async function toolbarStyle(pageNumber,rect,color){
+  const host=document.createElement('div');document.body.append(host);
+  const component=mount(TextEditorBar,{target:host,props:{reader,container,selected:structuredClone(selected())}});
+  try{
+    await frames();const size=host.querySelector('[aria-label="文字批注字号"]'),picker=host.querySelector('[aria-label="文字批注颜色"]');
+    check(size&&picker,'real text toolbar size/color controls missing');
+    // Focus and DOM input/change exercise the real bindings without opening a
+    // system color dialog or dispatching any desktop input.
+    size.focus();size.value='16';size.dispatchEvent(new Event('input',{bubbles:true}));
+    const beforeColor=selected().color,changedColor=color;picker.focus();picker.value=changedColor;picker.dispatchEvent(new Event('input',{bubbles:true}));
+    await frames();await geometry(pageNumber,rect,{fontSize:16,color:changedColor});reader.edit('undo');await frames();await geometry(pageNumber,rect,{fontSize:16,color:beforeColor});reader.edit('undo');await frames();await geometry(pageNumber,rect,{fontSize:12,color:beforeColor});reader.edit('redo');reader.edit('redo');await frames();await geometry(pageNumber,rect,{fontSize:16,color:changedColor});toolbarBindings=true;
+  }finally{await unmount(component);host.remove();}
+}
+async function report(value){
+  if(finished)return;finished=true;result.textContent=JSON.stringify(value);
+  await fetch(`/__test-result/${new URL(location.href).searchParams.get('nonce')}`,{method:'POST',body:JSON.stringify(value)});
+}
+
+try{
+  const bytes=editorFixture();await reader.open(source(bytes));
+  await wait(()=>state?.viewReady&&state.editingAllowed,'synthetic PDF did not open');
+  for(let pageNumber=1;pageNumber<=4;pageNumber++){
+    const definition=editorFixturePages[pageNumber-1];stage=`fixture page${pageNumber}`;
+    const page=await reader.getPage(pageNumber);check(page.rotate===definition.rotation,'fixture rotation invalid');rectNear(page.view,definition.crop,0,'fixture CropBox');
+    reader.goToPage(pageNumber);await wait(()=>pageNode(pageNumber)?.querySelector('.annotationEditorLayer'),'editor layer did not render');
+    const [x,y]=page.view;let rect=[x+54,y+160,x+294,y+290];const initial=initialReply,initialColor=definition.dark?'#ffffff':'#000000',editedColor=definition.dark?'#f1dd73':'#164a81';
+    await painted(pageNumber,rect,definition.dark);
+    await temporaryRound(pageNumber,rect,definition.rotation);await wait(()=>selected()?.page===pageNumber,'created annotation was not selected');
+    for(const zoom of [.5,1,2]){
+      stage=`page${pageNumber} rotation${definition.rotation} zoom${zoom} DPR${devicePixelRatio}`;
+      reader.zoom(zoom);await wait(()=>Math.abs(state.scale-zoom)<.001,'PDF zoom did not synchronize');await frames();
+      await painted(pageNumber,rect,definition.dark);
+      const metrics=await geometry(pageNumber,rect,{color:initialColor});cases.push({page:pageNumber,rotation:definition.rotation,zoom,...metrics});
+      if(zoom===1)await dragFormalHandle(pageNumber,rect,initialColor);
+      if(pageNumber===1&&zoom===1)await doubleClickEdit(pageNumber,rect,initialColor);
+      // Move and independent width/height changes pass through the same finite
+      // control adapter used by the UI, with actual DOM geometry checked next.
+      const moved=rect.map((n,i)=>n+(i%2===0?16:9));reader.resizeText(moved);await frames();await geometry(pageNumber,moved,{color:initialColor});
+      reader.edit('undo');await frames();await geometry(pageNumber,rect,{color:initialColor});
+      reader.edit('redo');await frames();await geometry(pageNumber,moved,{color:initialColor});
+      const resized=[moved[0],moved[1],moved[2]+20,moved[3]+16];reader.resizeText(resized);await frames();await geometry(pageNumber,resized,{color:initialColor});
+      reader.edit('undo');await frames();await geometry(pageNumber,moved,{color:initialColor});
+      reader.edit('redo');await frames();await geometry(pageNumber,resized,{color:initialColor});
+      // Restore the initial geometry so successive zoom cases remain identical.
+      reader.resizeText(rect);await frames();
+      if(pageNumber===1&&zoom===1)await toolbarStyle(pageNumber,rect,editedColor);
+      else {reader.textSize(16);reader.textColor(editedColor);await frames();await geometry(pageNumber,rect,{fontSize:16,color:editedColor});}
+      reader.textEdit();const internal=selectedEditor()?.querySelector('.internal');check(internal?.isContentEditable,'normal content editing is unavailable');
+      const updated=`修改 中文 β ≥ 10\nZoom ${zoom}`;writeEditable(internal,updated);reader.draft();await frames();
+      check(currentEntry(pageNumber).value===updated,'text commit did not update the normal draft');await geometry(pageNumber,rect,{fontSize:16,color:editedColor});
+      reader.edit('undo');await frames();check(currentEntry(pageNumber).value===initial,'undo did not restore original text');await geometry(pageNumber,rect,{fontSize:16,color:editedColor});
+      reader.edit('redo');await frames();check(currentEntry(pageNumber).value===updated,'redo did not restore edited text');await geometry(pageNumber,rect,{fontSize:16,color:editedColor});
+      const before=await projected(pageNumber,rect);container.scrollTop+=137;container.scrollLeft+=73;await frames();await geometry(pageNumber,rect,{fontSize:16,color:editedColor});
+      const after=await projected(pageNumber,rect);check(Number.isFinite(after.top)&&Number.isFinite(after.left),'scroll projection is not finite');
+      edits.push({page:pageNumber,zoom,scrollY:+(after.top-before.top).toFixed(2),scrollX:+(after.left-before.left).toFixed(2),text:true,size:true,color:true,undoRedo:true});
+      // Reset wording/style through normal controls for the next zoom group.
+      reader.textEdit();const body=selectedEditor().querySelector('.internal');writeEditable(body,initial);reader.draft();reader.textSize(12);reader.textColor(initialColor);await frames();
+    }
+  }
+  stage='cold draft reopen';const saved=reader.draft();check(saved.entries.length===4,'four independent annotations were not retained');
+  await reader.close();await reader.open(source(bytes),undefined,saved);await wait(()=>state?.viewReady&&state.editingAllowed,'same synthetic document did not reopen');
+  for(let pageNumber=1;pageNumber<=4;pageNumber++){
+    stage=`cold restore page${pageNumber}`;reader.goToPage(pageNumber);await wait(()=>pageNode(pageNumber)?.querySelector('.freeTextEditor'),'cold draft editor did not render');await selectRestored(pageNumber);
+    const entry=saved.entries.find(e=>e.pageIndex===pageNumber-1);await geometry(pageNumber,entry.rect,{fontSize:entry.fontSize,color:editorFixturePages[pageNumber-1].dark?'#ffffff':'#000000'});
+  }
+  const restored=reader.draft();check(restored.entries.length===saved.entries.length,'cold reopen lost draft annotations');
+  for(const entry of saved.entries){const reopened=restored.entries.find(e=>e.pageIndex===entry.pageIndex);check(reopened&&reopened.value===entry.value,'draft text changed during cold reopen');rectNear(reopened.rect,entry.rect,.5,'cold restored PDF Rect');near(reopened.fontSize,entry.fontSize,.01,'cold restored font size');rectNear([...reopened.color,255],[...entry.color,255],1,'cold restored color');}
+  stage='unrelated document';const other=editorFixture('A different synthetic document');await reader.open(source(other));await wait(()=>state?.viewReady,'other synthetic document did not open');
+  check(reader.draft().entries.length===0,'old draft leaked into another document');check(!pages.querySelector('.freeTextEditor'),'old editor DOM leaked into another document');
+  await reader.dispose();delete window.__TAURI_INTERNALS__;await report({status:'PASS',evidence:'isolated-headless-only-local-mock',dpr:devicePixelRatio,geometryCases:cases.length,temporaryCases:temporaryCases.length,mockCalls,editCases:edits.length,rotations:[0,90,180,270],zoom:[.5,1,2],temporaryExpand:true,temporaryDrag:true,temporaryResize:true,temporaryCancel:true,componentConfirm:true,toolbarBindings,coldRestore:true,noCrossDocumentDraft:true,cases,temporary:temporaryCases});
+}catch(error){
+  const ed=selectedEditor(),pn=pageNode(state?.page),cn=pn?.querySelector('.canvasWrapper'),layer=pn?.querySelector('.annotationEditorLayer'),temporary=harnessHost?.querySelector('.inline-answer');
+  const diagnostic={stage,scale:state?.scale,page:state?.page,selected:selected(),editors:pages.querySelectorAll('.freeTextEditor').length,boxes:{page:pn?.getBoundingClientRect().toJSON(),canvas:cn?.getBoundingClientRect().toJSON(),bitmap:cn?.querySelector('canvas')?.getBoundingClientRect().toJSON(),layer:layer?.getBoundingClientRect().toJSON(),editor:ed?.getBoundingClientRect().toJSON(),temporary:temporary?.getBoundingClientRect().toJSON()},temporaryStyles:temporary?{left:temporary.style.left,top:temporary.style.top,width:temporary.style.width,height:temporary.style.height,scale:temporary.style.getPropertyValue('--inline-scale'),visibility:temporary.style.visibility}:null,styles:ed?{left:ed.style.left,top:ed.style.top,width:ed.style.width,height:ed.style.height,rotation:ed.dataset.editorRotation,padding:getComputedStyle(ed).padding,boxSizing:getComputedStyle(pn).boxSizing,pageBorder:getComputedStyle(pn).borderWidth}:null};
+  await disposeHarness().catch(()=>{});delete window.__TAURI_INTERNALS__;await reader.dispose().catch(()=>{});await report({status:'FAIL',evidence:'isolated-headless-only-local-mock',error:String(error),diagnostic,completedCases:cases.length,completedTemporaryCases:temporaryCases.length});
+}
+</script>

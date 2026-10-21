@@ -1,0 +1,66 @@
+/* The text and selection remain PDF.js FreeText objects. This stylesheet only
+   gives the controlled fixed box a stable layout and small local resize grips. */
+.annotationEditorLayer .freeTextEditor.reader-free-text {
+  box-sizing: border-box;
+  padding: 0;
+  border-width: 0;
+}
+.annotationEditorLayer .freeTextEditor.reader-free-text .internal {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  white-space: break-spaces;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  overflow: visible;
+  hyphens: none;
+}
+.reader-free-text > .reader-freetext-handles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: none;
+  z-index: 6;
+}
+.reader-free-text.selectedEditor > .reader-freetext-handles { display: block; }
+.reader-free-text > .reader-freetext-handles > button {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: auto;
+  box-sizing: border-box;
+  font: 10px sans-serif;
+  transform: translate(-50%, -50%);
+  touch-action: none;
+}
+.reader-free-text > .reader-freetext-handles > button::after {content:'';position:absolute;left:8px;top:8px;width:8px;height:8px;border:1px solid #426789;border-radius:1px;background:white;box-sizing:border-box;}
+.reader-free-text > .reader-freetext-handles > button:hover::after {background:#daeaf6;}
+.reader-free-text > .reader-freetext-handles > button:disabled {pointer-events:none;}
+.reader-freetext-handles [data-handle="TL"] { left: 0; top: 0; cursor: nwse-resize; }
+.reader-freetext-handles [data-handle="TM"] { left: 50%; top: 0; cursor: ns-resize; }
+.reader-freetext-handles [data-handle="TR"] { left: 100%; top: 0; cursor: nesw-resize; }
+.reader-freetext-handles [data-handle="MR"] { left: 100%; top: 50%; cursor: ew-resize; }
+.reader-freetext-handles [data-handle="BR"] { left: 100%; top: 100%; cursor: nwse-resize; }
+.reader-freetext-handles [data-handle="BM"] { left: 50%; top: 100%; cursor: ns-resize; }
+.reader-freetext-handles [data-handle="BL"] { left: 0; top: 100%; cursor: nesw-resize; }
+.reader-freetext-handles [data-handle="ML"] { left: 0; top: 50%; cursor: ew-resize; }
+.reader-free-text.reader-text-overflow.selectedEditor { outline-color: #b46b19; }
+.reader-free-text.reader-text-overflow { outline:1px solid #b46b19; }
+.annotationEditorLayer .reader-free-text > .editToolbar { display: none; }
+.annotationEditorLayer .reader-stroke-controls > .editToolbar { display:none; }
+.reader-erasing .annotationEditorLayer,
+.reader-erasing .annotationEditorLayer :is(.freeTextEditor,.inkEditor,.highlightEditor) { cursor: crosshair; }
+.reader-erasing .reader-freetext-handles { display: none !important; }
+/* Ink stays a standard editable PDF object for other readers. In this app its
+   interaction is draw/erase/undo only; the bounding rectangle cannot take hits. */
+.annotationEditorLayer .inkEditor,
+.annotationLayer .inkAnnotation { pointer-events: none; }
+.annotationEditorLayer .inkEditor { outline: none !important; cursor: default; }
+.annotationEditorLayer .inkEditor :is(.resizers,.editToolbar) { display: none !important; }
+.reader-erasing .annotationEditorLayer .inkEditor { pointer-events: auto; }

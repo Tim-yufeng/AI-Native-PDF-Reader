@@ -1,0 +1,3 @@
+{
+  "app": { "security": { "capabilities": ["reader", "reader-m3"] } }
+}
